@@ -11,4 +11,3 @@
 *.aab
 app/src/main/jni/llama_cpp/
 app/src/main/jni/quickjs/
-.github/workflows/
