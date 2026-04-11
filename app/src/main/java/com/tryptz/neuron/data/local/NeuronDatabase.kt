@@ -10,14 +10,16 @@ import com.tryptz.neuron.data.local.entity.*
         ConversationEntity::class,
         MessageEntity::class,
         InstalledModelEntity::class,
+        LocalModelEntity::class,
         CodeSnippetEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = true
 )
 abstract class NeuronDatabase : RoomDatabase() {
     abstract fun conversationDao(): ConversationDao
     abstract fun messageDao(): MessageDao
     abstract fun installedModelDao(): InstalledModelDao
+    abstract fun localModelDao(): LocalModelDao
     abstract fun codeSnippetDao(): CodeSnippetDao
 }

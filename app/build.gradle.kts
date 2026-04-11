@@ -94,4 +94,7 @@ dependencies {
     implementation(libs.timber)
     implementation(libs.core.ktx)
     implementation(libs.activity.compose)
+    testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

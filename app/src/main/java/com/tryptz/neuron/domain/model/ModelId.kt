@@ -14,7 +14,8 @@ enum class ModelId(val raw: String) {
     LLAMA32_1B("llama32-1b-int4"),
     QWEN25_7B("qwen25-7b-q4km"),
     PHI4_MINI("phi4-3b-int4"),
-    MISTRAL_SMALL4("mistral-small4-int4");
+    MISTRAL_SMALL4("mistral-small4-int4"),
+    LOCAL("local");
 
     companion object {
         private val byRaw = entries.associateBy { it.raw }

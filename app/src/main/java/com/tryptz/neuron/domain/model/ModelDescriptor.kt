@@ -58,8 +58,9 @@ data class ModelDescriptor(
     val estimatedTokSec: Map<InferenceBackend, IntRange> = emptyMap(),
     val huggingFaceRepo: String,
     val huggingFaceFile: String,
-    val recommendationTag: String? = null
+    val recommendationTag: String? = null,
+    val localId: String? = null
 ) {
-    /** Convenience accessor for the raw string ID. */
-    val id: String get() = modelId.raw
+    /** Convenience accessor — uses [localId] for imported models, raw enum ID for registry models. */
+    val id: String get() = localId ?: modelId.raw
 }

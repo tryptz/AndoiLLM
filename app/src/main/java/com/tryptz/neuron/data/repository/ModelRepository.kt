@@ -2,21 +2,28 @@ package com.tryptz.neuron.data.repository
 
 import android.app.ActivityManager
 import android.content.Context
+import android.net.Uri
 import com.tryptz.neuron.data.local.dao.InstalledModelDao
+import com.tryptz.neuron.data.local.dao.LocalModelDao
 import com.tryptz.neuron.data.local.entity.InstalledModelEntity
+import com.tryptz.neuron.data.local.entity.LocalModelEntity
 import com.tryptz.neuron.data.model.ModelRegistry
-import com.tryptz.neuron.domain.model.ModelDescriptor
+import com.tryptz.neuron.domain.model.*
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.withContext
 import java.io.File
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class ModelRepository @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val installedModelDao: InstalledModelDao
+    private val installedModelDao: InstalledModelDao,
+    private val localModelDao: LocalModelDao
 ) {
     val modelsDir: File = File(context.filesDir, "models").also { it.mkdirs() }
 
@@ -53,6 +60,75 @@ class ModelRepository @Inject constructor(
         val entity = installedModelDao.getByDescriptorId(descriptorId) ?: return
         File(entity.filePath).delete()
         installedModelDao.deleteById(entity.id)
+    }
+
+    // ── Local model import ──
+
+    fun observeLocalModels(): Flow<List<LocalModelEntity>> =
+        localModelDao.observeAll()
+
+    suspend fun getLocalModel(id: String): LocalModelEntity? =
+        localModelDao.getById(id)
+
+    suspend fun importLocalModel(
+        uri: Uri,
+        name: String,
+        chatTemplate: ChatTemplate,
+        contextLength: Int
+    ): Result<LocalModelEntity> = withContext(Dispatchers.IO) {
+        runCatching {
+            val fileName = resolveFileName(uri)
+            val destFile = File(modelsDir, fileName)
+
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                destFile.outputStream().use { output -> input.copyTo(output) }
+            } ?: throw IllegalStateException("Cannot read file")
+
+            val entity = LocalModelEntity(
+                id = UUID.randomUUID().toString(),
+                name = name.ifBlank { fileName.removeSuffix(".gguf") },
+                fileName = fileName,
+                filePath = destFile.absolutePath,
+                fileSizeBytes = destFile.length(),
+                chatTemplate = chatTemplate.raw,
+                contextLength = contextLength,
+                installedAt = System.currentTimeMillis()
+            )
+            localModelDao.insert(entity)
+            entity
+        }
+    }
+
+    suspend fun deleteLocalModel(id: String) {
+        val entity = localModelDao.getById(id) ?: return
+        File(entity.filePath).delete()
+        localModelDao.deleteById(id)
+    }
+
+    fun buildLocalDescriptor(entity: LocalModelEntity): ModelDescriptor =
+        ModelDescriptor(
+            modelId = ModelId.LOCAL,
+            name = entity.name,
+            family = "local",
+            totalParams = "Unknown",
+            quantization = Quantization.Q4_K_M,
+            fileSizeMb = (entity.fileSizeBytes / (1024 * 1024)).toInt(),
+            ramRequiredMb = (entity.fileSizeBytes / (1024 * 1024)).toInt() + 500,
+            maxContext = entity.contextLength,
+            supportedBackends = listOf(InferenceBackend.GPU, InferenceBackend.CPU),
+            chatTemplate = ChatTemplate.fromRaw(entity.chatTemplate),
+            huggingFaceRepo = "",
+            huggingFaceFile = "",
+            localId = entity.id
+        )
+
+    private fun resolveFileName(uri: Uri): String {
+        val cursor = context.contentResolver.query(uri, null, null, null, null)
+        val nameFromUri = cursor?.use {
+            val nameIndex = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (it.moveToFirst() && nameIndex >= 0) it.getString(nameIndex) else null
+        }
+        return nameFromUri ?: "model_${System.currentTimeMillis()}.gguf"
     }
 
     fun getAvailableRamMb(): Int {
