@@ -44,7 +44,10 @@ class InferenceEngine @Inject constructor() {
                 }
             )
 
-            require(handle != 0L) { "Failed to load model: ${descriptor.name}" }
+            require(handle != 0L) {
+                "Failed to load ${descriptor.name} on ${backend.label} backend. " +
+                    "Try a different backend or quantization format."
+            }
             currentModel = ModelHandle(handle, descriptor, backend)
             Timber.i("Model loaded: ${descriptor.name} on $backend")
         }

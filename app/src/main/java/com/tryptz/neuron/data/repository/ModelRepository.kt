@@ -127,7 +127,7 @@ class ModelRepository @Inject constructor(
             fileSizeMb = fileSizeMb,
             ramRequiredMb = fileSizeMb + 500,
             maxContext = entity.contextLength,
-            supportedBackends = listOf(InferenceBackend.CPU, InferenceBackend.GPU),
+            supportedBackends = listOf(InferenceBackend.CPU),
             chatTemplate = ChatTemplate.fromRaw(entity.chatTemplate),
             huggingFaceRepo = "",
             huggingFaceFile = "",
