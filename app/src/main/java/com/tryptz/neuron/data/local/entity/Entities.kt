@@ -56,6 +56,9 @@ data class LocalModelEntity(
     val fileSizeBytes: Long,
     val chatTemplate: String,
     val contextLength: Int,
+    val architecture: String? = null,
+    val quantization: String? = null,
+    val parameterCount: Long? = null,
     val installedAt: Long
 )
 

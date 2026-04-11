@@ -74,7 +74,10 @@ class ModelRepository @Inject constructor(
         uri: Uri,
         name: String,
         chatTemplate: ChatTemplate,
-        contextLength: Int
+        contextLength: Int,
+        architecture: String? = null,
+        quantization: String? = null,
+        parameterCount: Long? = null
     ): Result<LocalModelEntity> = withContext(Dispatchers.IO) {
         runCatching {
             val fileName = resolveFileName(uri)
@@ -92,6 +95,9 @@ class ModelRepository @Inject constructor(
                 fileSizeBytes = destFile.length(),
                 chatTemplate = chatTemplate.raw,
                 contextLength = contextLength,
+                architecture = architecture,
+                quantization = quantization,
+                parameterCount = parameterCount,
                 installedAt = System.currentTimeMillis()
             )
             localModelDao.insert(entity)
@@ -105,22 +111,35 @@ class ModelRepository @Inject constructor(
         localModelDao.deleteById(id)
     }
 
-    fun buildLocalDescriptor(entity: LocalModelEntity): ModelDescriptor =
-        ModelDescriptor(
+    fun buildLocalDescriptor(entity: LocalModelEntity): ModelDescriptor {
+        val quant = entity.quantization?.let { q ->
+            Quantization.entries.find { it.label.equals(q, ignoreCase = true) }
+        } ?: Quantization.Q4_K_M
+        val fileSizeMb = (entity.fileSizeBytes / (1024 * 1024)).toInt()
+        val paramsStr = entity.parameterCount?.let { formatParamCount(it) } ?: "Unknown"
+
+        return ModelDescriptor(
             modelId = ModelId.LOCAL,
             name = entity.name,
-            family = "local",
-            totalParams = "Unknown",
-            quantization = Quantization.Q4_K_M,
-            fileSizeMb = (entity.fileSizeBytes / (1024 * 1024)).toInt(),
-            ramRequiredMb = (entity.fileSizeBytes / (1024 * 1024)).toInt() + 500,
+            family = entity.architecture ?: "local",
+            totalParams = paramsStr,
+            quantization = quant,
+            fileSizeMb = fileSizeMb,
+            ramRequiredMb = fileSizeMb + 500,
             maxContext = entity.contextLength,
-            supportedBackends = listOf(InferenceBackend.GPU, InferenceBackend.CPU),
+            supportedBackends = listOf(InferenceBackend.CPU, InferenceBackend.GPU),
             chatTemplate = ChatTemplate.fromRaw(entity.chatTemplate),
             huggingFaceRepo = "",
             huggingFaceFile = "",
             localId = entity.id
         )
+    }
+
+    private fun formatParamCount(params: Long): String = when {
+        params >= 1_000_000_000 -> "%.1fB".format(params / 1_000_000_000.0)
+        params >= 1_000_000 -> "%.0fM".format(params / 1_000_000.0)
+        else -> "${params}"
+    }
 
     private fun resolveFileName(uri: Uri): String {
         val cursor = context.contentResolver.query(uri, null, null, null, null)

@@ -1,5 +1,6 @@
 package com.tryptz.neuron.ui.modelmanager.viewmodel
 
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -10,9 +11,14 @@ import com.tryptz.neuron.data.repository.ModelRepository
 import com.tryptz.neuron.domain.model.*
 import com.tryptz.neuron.download.ModelDownloadWorker
 import com.tryptz.neuron.util.DeviceMonitor
+import com.tryptz.neuron.util.GgufMetadata
+import com.tryptz.neuron.util.GgufMetadataReader
 import dagger.hilt.android.lifecycle.HiltViewModel
+import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 data class ModelManagerUiState(
@@ -32,11 +38,17 @@ data class ModelManagerUiState(
     val importChatTemplate: ChatTemplate = ChatTemplate.CHATML,
     val importContextLength: Int = 4096,
     val isImporting: Boolean = false,
+    val isDetecting: Boolean = false,
+    val detectedMetadata: GgufMetadata? = null,
+    val importArchitecture: String? = null,
+    val importQuantization: String? = null,
+    val importParamCount: Long? = null,
     val importError: String? = null
 )
 
 @HiltViewModel
 class ModelManagerViewModel @Inject constructor(
+    @ApplicationContext private val appContext: Context,
     private val modelRepo: ModelRepository,
     private val workManager: WorkManager,
     private val deviceMonitor: DeviceMonitor
@@ -136,8 +148,32 @@ class ModelManagerViewModel @Inject constructor(
                 importName = displayName,
                 importChatTemplate = ChatTemplate.CHATML,
                 importContextLength = 4096,
+                isDetecting = true,
+                detectedMetadata = null,
+                importArchitecture = null,
+                importQuantization = null,
+                importParamCount = null,
                 importError = null
             )
+        }
+
+        viewModelScope.launch {
+            val metadata = withContext(Dispatchers.IO) {
+                GgufMetadataReader.read(appContext, uri)
+            }
+
+            _uiState.update {
+                it.copy(
+                    isDetecting = false,
+                    detectedMetadata = metadata,
+                    importName = metadata?.name ?: displayName,
+                    importChatTemplate = metadata?.inferredChatTemplate ?: ChatTemplate.CHATML,
+                    importContextLength = metadata?.contextLength ?: 4096,
+                    importArchitecture = metadata?.architecture,
+                    importQuantization = metadata?.displayQuantization,
+                    importParamCount = metadata?.parameterCount
+                )
+            }
         }
     }
 
@@ -168,7 +204,10 @@ class ModelManagerViewModel @Inject constructor(
                 uri = uri,
                 name = state.importName,
                 chatTemplate = state.importChatTemplate,
-                contextLength = state.importContextLength
+                contextLength = state.importContextLength,
+                architecture = state.importArchitecture,
+                quantization = state.importQuantization,
+                parameterCount = state.importParamCount
             ).onSuccess {
                 _uiState.update { it.copy(showImportDialog = false, importUri = null, isImporting = false) }
             }.onFailure { e ->
