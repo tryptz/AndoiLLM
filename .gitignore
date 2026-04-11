@@ -1,13 +1,54 @@
-*.iml
-.gradle
-/local.properties
-/.idea
+# OS files
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
+Thumbs.db
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+
+# Gradle and build output
+.gradle/
+build/
+**/build/
+captures/
+
+# Android local config
+local.properties
+
+# Android Studio generated files
+.externalNativeBuild/
+.cxx/
+
+# Native build artifacts
+*.o
+*.obj
+*.so
+*.a
+*.dylib
+*.dll
+*.exe
+*.ninja
+
+# CMake and NDK intermediate files
+**/CMakeFiles/
+**/CMakeCache.txt
+**/cmake_install.cmake
+**/compile_commands.json
+
+# Packaged artifacts
 *.apk
 *.aab
+*.ap_
+
+# Logs
+*.log
+
+# Kotlin/Java crash logs and heap dumps
+hs_err_pid*
+replay_pid*
+*.hprof
+
+# Project-specific ignored JNI directories
 app/src/main/jni/llama_cpp/
 app/src/main/jni/quickjs/
