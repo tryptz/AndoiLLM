@@ -9,6 +9,7 @@ import com.tryptz.neuron.data.local.entity.InstalledModelEntity
 import com.tryptz.neuron.data.local.entity.LocalModelEntity
 import com.tryptz.neuron.data.model.ModelRegistry
 import com.tryptz.neuron.domain.model.*
+import com.tryptz.neuron.inference.backend.BackendResolver
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -127,12 +128,32 @@ class ModelRepository @Inject constructor(
             fileSizeMb = fileSizeMb,
             ramRequiredMb = fileSizeMb + 500,
             maxContext = entity.contextLength,
-            supportedBackends = listOf(InferenceBackend.CPU),
+            supportedBackends = resolveLocalBackends(quant, fileSizeMb),
             chatTemplate = ChatTemplate.fromRaw(entity.chatTemplate),
             huggingFaceRepo = "",
             huggingFaceFile = "",
             localId = entity.id
         )
+    }
+
+    /**
+     * Determine supported backends for a local model based on its quantization.
+     * NPU (Hexagon HTP) only supports Q4_0, Q8_0, INT4, INT8, FP16.
+     * GPU (Vulkan) supports most quants except newer IQ types.
+     * CPU supports everything.
+     */
+    private fun resolveLocalBackends(quant: Quantization, fileSizeMb: Int): List<InferenceBackend> {
+        val backends = mutableListOf(InferenceBackend.CPU)
+
+        // GPU via Vulkan: supports standard quants (not IQ types, but our enum doesn't have IQ)
+        backends += InferenceBackend.GPU
+
+        // NPU via Hexagon: only specific quants and models < 4GB
+        if (BackendResolver.isNpuCompatibleQuant(quant) && fileSizeMb <= 4000) {
+            backends += InferenceBackend.NPU
+        }
+
+        return backends
     }
 
     private fun formatParamCount(params: Long): String = when {

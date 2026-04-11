@@ -6,7 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ── Options ──
 option(LLAMA_VULKAN "Enable Vulkan GPU acceleration" ON)
-option(LLAMA_QNN "Enable Qualcomm QNN/NPU acceleration" OFF)
+option(LLAMA_HEXAGON "Enable Hexagon NPU acceleration" ON)
 
 # ── llama.cpp ──
 # llama.cpp source is expected at app/src/main/jni/llama_cpp/
@@ -21,11 +21,26 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/llama_cpp/CMakeLists.txt")
         set(GGML_VULKAN ON CACHE BOOL "" FORCE)
     endif()
 
+    # Hexagon NPU backend — requires Hexagon SDK 6.x
+    # Install via Qualcomm Package Manager and set HEXAGON_SDK_ROOT
+    if(LLAMA_HEXAGON AND DEFINED ENV{HEXAGON_SDK_ROOT})
+        set(GGML_HEXAGON ON CACHE BOOL "" FORCE)
+        set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
+        set(HEXAGON_NPU_AVAILABLE TRUE)
+        message(STATUS "Hexagon NPU backend ENABLED (SDK: $ENV{HEXAGON_SDK_ROOT})")
+    elseif(LLAMA_HEXAGON)
+        set(HEXAGON_NPU_AVAILABLE FALSE)
+        message(STATUS "Hexagon NPU backend SKIPPED (HEXAGON_SDK_ROOT not set)")
+    else()
+        set(HEXAGON_NPU_AVAILABLE FALSE)
+    endif()
+
     add_subdirectory(llama_cpp)
     set(LLAMA_AVAILABLE TRUE)
 else()
     message(WARNING "llama.cpp not found at ${CMAKE_CURRENT_SOURCE_DIR}/llama_cpp/ — building stub")
     set(LLAMA_AVAILABLE FALSE)
+    set(HEXAGON_NPU_AVAILABLE FALSE)
 endif()
 
 # ── QuickJS ──
@@ -61,8 +76,13 @@ target_include_directories(neuron_inference PRIVATE
 if(LLAMA_AVAILABLE)
     target_link_libraries(neuron_inference PRIVATE llama ggml common)
     target_compile_definitions(neuron_inference PRIVATE LLAMA_AVAILABLE=1)
+    if(HEXAGON_NPU_AVAILABLE)
+        target_compile_definitions(neuron_inference PRIVATE HEXAGON_NPU_AVAILABLE=1)
+    else()
+        target_compile_definitions(neuron_inference PRIVATE HEXAGON_NPU_AVAILABLE=0)
+    endif()
 else()
-    target_compile_definitions(neuron_inference PRIVATE LLAMA_AVAILABLE=0)
+    target_compile_definitions(neuron_inference PRIVATE LLAMA_AVAILABLE=0 HEXAGON_NPU_AVAILABLE=0)
 endif()
 
 target_link_libraries(neuron_inference PRIVATE

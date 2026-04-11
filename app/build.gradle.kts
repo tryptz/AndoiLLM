@@ -21,7 +21,7 @@ android {
         ndk { abiFilters += listOf("arm64-v8a") }
         externalNativeBuild {
             cmake {
-                arguments("-DANDROID_STL=c++_shared", "-DLLAMA_VULKAN=ON", "-DLLAMA_QNN=OFF")
+                arguments("-DANDROID_STL=c++_shared", "-DLLAMA_VULKAN=ON", "-DLLAMA_HEXAGON=ON")
                 cppFlags("-std=c++20", "-O3", "-ffast-math")
             }
         }

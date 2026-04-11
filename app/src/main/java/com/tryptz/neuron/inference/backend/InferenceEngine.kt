@@ -37,8 +37,7 @@ class InferenceEngine @Inject constructor() {
                 contextLength = settings.contextLength.coerceAtMost(descriptor.maxContext),
                 batchSize = settings.batchSize,
                 threadCount = if (settings.threadCount == 0) BackendResolver.resolveThreadCount() else settings.threadCount,
-                gpuLayers = if (backend == InferenceBackend.GPU) 999 else 0,
-                useVulkan = backend == InferenceBackend.GPU,
+                backendType = backend.ordinal, // 0=NPU, 1=GPU, 2=CPU
                 kvCacheTypeQuant = when (settings.kvCacheQuant) {
                     Quantization.FP16 -> 0; Quantization.Q8_0 -> 1; Quantization.Q4_0 -> 2; else -> 1
                 }

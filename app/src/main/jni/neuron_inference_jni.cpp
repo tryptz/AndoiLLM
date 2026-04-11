@@ -54,20 +54,45 @@ extern "C" {
 
 // ── Model lifecycle ──
 
+// Backend type constants (must match Kotlin InferenceBackend ordinal)
+// 0=NPU, 1=GPU, 2=CPU, 3=AUTO
+static const int BACKEND_NPU = 0;
+static const int BACKEND_GPU = 1;
+static const int BACKEND_CPU = 2;
+
 JNIEXPORT jlong JNICALL
 Java_com_tryptz_neuron_inference_bridge_LlamaBridge_loadModel(
     JNIEnv* env, jobject,
     jstring modelPath, jint contextLength, jint batchSize,
-    jint threadCount, jint gpuLayers, jboolean useVulkan,
-    jint kvCacheTypeQuant)
+    jint threadCount, jint backendType, jint kvCacheTypeQuant)
 {
 #if LLAMA_AVAILABLE
     const char* path = env->GetStringUTFChars(modelPath, nullptr);
-    LOGI("Loading model: %s", path);
+    LOGI("Loading model: %s (backend=%d)", path, backendType);
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = gpuLayers;
-    // Vulkan would be configured via ggml backend init
+
+    // Backend-specific configuration
+    // NPU and GPU both use n_gpu_layers to offload computation to the accelerator.
+    // llama.cpp's backend system selects the available device:
+    //   - GGML_HEXAGON: offloads to Hexagon NPU (HTP)
+    //   - GGML_VULKAN:  offloads to Adreno GPU via Vulkan
+    //   - Neither:      pure CPU with NEON SIMD
+    if (backendType == BACKEND_NPU) {
+#if HEXAGON_NPU_AVAILABLE
+        mparams.n_gpu_layers = 999; // offload all layers to NPU
+        LOGI("NPU backend selected — offloading to Hexagon HTP");
+#else
+        LOGE("NPU backend requested but Hexagon not compiled in — falling back to CPU");
+        mparams.n_gpu_layers = 0;
+#endif
+    } else if (backendType == BACKEND_GPU) {
+        mparams.n_gpu_layers = 999; // offload all layers to GPU
+        LOGI("GPU backend selected — offloading to Adreno via Vulkan");
+    } else {
+        mparams.n_gpu_layers = 0; // pure CPU
+        LOGI("CPU backend selected — NEON SIMD");
+    }
 
     llama_model* model = llama_model_load_from_file(path, mparams);
     env->ReleaseStringUTFChars(modelPath, path);
@@ -105,7 +130,7 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_loadModel(
     // Initialize sampler
     mc->sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
 
-    LOGI("Model loaded successfully, ctx=%d", contextLength);
+    LOGI("Model loaded successfully, ctx=%d, backend=%d", contextLength, backendType);
     return reinterpret_cast<jlong>(mc);
 #else
     LOGE("llama.cpp not available — stub mode");

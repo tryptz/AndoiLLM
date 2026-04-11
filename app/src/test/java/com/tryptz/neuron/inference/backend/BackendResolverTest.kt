@@ -3,19 +3,21 @@ package com.tryptz.neuron.inference.backend
 import com.tryptz.neuron.domain.model.*
 import org.junit.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class BackendResolverTest {
 
     private fun model(
         backends: List<InferenceBackend>,
-        ramRequiredMb: Int = 2000
+        ramRequiredMb: Int = 2000,
+        quantization: Quantization = Quantization.INT4
     ) = ModelDescriptor(
         modelId = ModelId.LLAMA32_3B,
         name = "Test",
         family = "test",
         totalParams = "3B",
-        quantization = Quantization.INT4,
+        quantization = quantization,
         fileSizeMb = 1000,
         ramRequiredMb = ramRequiredMb,
         maxContext = 4096,
@@ -68,6 +70,33 @@ class BackendResolverTest {
             model(listOf(InferenceBackend.NPU, InferenceBackend.GPU), ramRequiredMb = 4001)
         )
         assertEquals(InferenceBackend.GPU, above4000)
+    }
+
+    @Test
+    fun `NPU rejected for incompatible quantization`() {
+        val result = BackendResolver.resolve(
+            model(
+                listOf(InferenceBackend.NPU, InferenceBackend.GPU, InferenceBackend.CPU),
+                ramRequiredMb = 2000,
+                quantization = Quantization.Q4_K_M // K-type not supported on NPU
+            )
+        )
+        assertEquals(InferenceBackend.GPU, result)
+    }
+
+    @Test
+    fun `NPU compatible quants`() {
+        assertTrue(BackendResolver.isNpuCompatibleQuant(Quantization.Q4_0))
+        assertTrue(BackendResolver.isNpuCompatibleQuant(Quantization.Q8_0))
+        assertTrue(BackendResolver.isNpuCompatibleQuant(Quantization.INT4))
+        assertTrue(BackendResolver.isNpuCompatibleQuant(Quantization.INT8))
+        assertTrue(BackendResolver.isNpuCompatibleQuant(Quantization.FP16))
+    }
+
+    @Test
+    fun `NPU incompatible quants`() {
+        assertFalse(BackendResolver.isNpuCompatibleQuant(Quantization.Q4_K_M))
+        assertFalse(BackendResolver.isNpuCompatibleQuant(Quantization.INT2))
     }
 
     @Test

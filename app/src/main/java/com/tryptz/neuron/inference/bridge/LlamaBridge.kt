@@ -28,8 +28,7 @@ object LlamaBridge {
         contextLength: Int,
         batchSize: Int,
         threadCount: Int,
-        gpuLayers: Int,
-        useVulkan: Boolean,
+        backendType: Int, // 0=NPU, 1=GPU, 2=CPU (matches InferenceBackend ordinal)
         kvCacheTypeQuant: Int // 0=F16, 1=Q8_0, 2=Q4_0
     ): Long // returns model handle, 0 on failure
 
