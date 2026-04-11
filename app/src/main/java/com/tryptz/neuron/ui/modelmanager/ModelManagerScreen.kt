@@ -93,6 +93,9 @@ fun ModelManagerScreen(
             chatTemplate = state.importChatTemplate,
             contextLength = state.importContextLength,
             isImporting = state.isImporting,
+            isDetecting = state.isDetecting,
+            detectedArch = state.importArchitecture,
+            detectedQuant = state.importQuantization,
             error = state.importError,
             onNameChange = viewModel::updateImportName,
             onTemplateChange = viewModel::updateImportChatTemplate,
@@ -438,7 +441,11 @@ private fun LocalModelCard(
                 Column(modifier = Modifier.weight(1f)) {
                     Text(model.name, style = MaterialTheme.typography.titleMedium)
                     Text(
-                        "${model.fileName} · ${ChatTemplate.fromRaw(model.chatTemplate).name}",
+                        buildString {
+                            model.architecture?.let { append("$it · ") }
+                            model.quantization?.let { append("$it · ") }
+                            append(ChatTemplate.fromRaw(model.chatTemplate).name)
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -450,7 +457,8 @@ private fun LocalModelCard(
             Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                 StatItem("Size", model.fileSizeBytes.formatBytes())
                 StatItem("Context", "${model.contextLength}")
-                StatItem("Template", ChatTemplate.fromRaw(model.chatTemplate).name)
+                model.architecture?.let { StatItem("Arch", it) }
+                model.quantization?.let { StatItem("Quant", it) }
             }
 
             Spacer(Modifier.height(12.dp))
@@ -481,6 +489,9 @@ private fun ImportModelDialog(
     chatTemplate: ChatTemplate,
     contextLength: Int,
     isImporting: Boolean,
+    isDetecting: Boolean,
+    detectedArch: String?,
+    detectedQuant: String?,
     error: String?,
     onNameChange: (String) -> Unit,
     onTemplateChange: (ChatTemplate) -> Unit,
@@ -502,6 +513,46 @@ private fun ImportModelDialog(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+
+                // Detected metadata banner
+                if (isDetecting) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Detecting model settings...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                } else if (detectedArch != null || detectedQuant != null) {
+                    Surface(
+                        shape = MaterialTheme.shapes.small,
+                        color = MaterialTheme.colorScheme.primaryContainer
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.AutoFixHigh,
+                                contentDescription = null,
+                                modifier = Modifier.size(16.dp),
+                                tint = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                buildString {
+                                    append("Detected: ")
+                                    listOfNotNull(detectedArch, detectedQuant)
+                                        .joinTo(this, " · ")
+                                },
+                                style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        }
+                    }
+                }
 
                 OutlinedTextField(
                     value = name,
@@ -585,7 +636,7 @@ private fun ImportModelDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onConfirm, enabled = !isImporting && name.isNotBlank()) {
+            TextButton(onClick = onConfirm, enabled = !isImporting && !isDetecting && name.isNotBlank()) {
                 Text("Import")
             }
         },
