@@ -1,6 +1,7 @@
 package com.tryptz.neuron.di
 
 import android.content.Context
+import androidx.work.WorkManager
 import androidx.room.Room
 import com.tryptz.neuron.data.local.NeuronDatabase
 import com.tryptz.neuron.data.local.dao.*
@@ -39,4 +40,9 @@ object AppModule {
             }
         }
     }
+
+    @Provides
+    @Singleton
+    fun provideWorkManager(@ApplicationContext context: Context): WorkManager =
+        WorkManager.getInstance(context)
 }

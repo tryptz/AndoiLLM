@@ -77,7 +77,7 @@ fun ModelSelectorSheet(
 
                         OutlinedCard(
                             onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 onSelectModel(model)
                                 onDismiss()
                             },

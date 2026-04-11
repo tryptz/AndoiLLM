@@ -11,6 +11,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.unit.dp
 
 /**
  * Typing indicator: three dots with staggered scale pulsing.
@@ -18,7 +19,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 @Composable
 fun TypingIndicator(modifier: Modifier = Modifier) {
     val infiniteTransition = rememberInfiniteTransition(label = "typing")
-    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(androidx.compose.ui.unit.dp.times(4))) {
+    Row(modifier = modifier, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         repeat(3) { index ->
             val scale by infiniteTransition.animateFloat(
                 initialValue = 0.6f,
@@ -32,7 +33,7 @@ fun TypingIndicator(modifier: Modifier = Modifier) {
             )
             Box(
                 modifier = Modifier
-                    .size(androidx.compose.ui.unit.dp.times(8))
+                    .size(8.dp)
                     .scale(scale)
                     .graphicsLayer { alpha = 0.4f + (scale - 0.6f) * 1.5f }
             ) {
@@ -93,7 +94,7 @@ fun ThermalDot(
     )
 
     androidx.compose.foundation.Canvas(
-        modifier = modifier.size(androidx.compose.ui.unit.dp.times(8))
+        modifier = modifier.size(8.dp)
     ) {
         drawCircle(color = color)
     }

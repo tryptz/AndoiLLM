@@ -22,12 +22,12 @@ class ModelRepository @Inject constructor(
 
     fun getAllDescriptors(): List<ModelDescriptor> = ModelRegistry.models
     fun getRecommended(): List<ModelDescriptor> = ModelRegistry.getRecommended()
-    fun getDescriptorById(id: String): ModelDescriptor? = ModelRegistry.getById(id)
+    fun getDescriptorById(id: String): ModelDescriptor? = ModelRegistry.getByRawId(id)
 
     fun observeInstalled(): Flow<List<ModelDescriptor>> =
         installedModelDao.observeAll().map { entities ->
             entities.mapNotNull { entity ->
-                ModelRegistry.getById(entity.descriptorId)
+                ModelRegistry.getByRawId(entity.descriptorId)
             }
         }
 

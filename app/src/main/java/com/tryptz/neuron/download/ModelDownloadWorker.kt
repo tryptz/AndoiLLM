@@ -51,7 +51,7 @@ class ModelDownloadWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         val modelId = inputData.getString(KEY_MODEL_ID) ?: return Result.failure()
-        val descriptor = ModelRegistry.getById(modelId) ?: return Result.failure()
+        val descriptor = ModelRegistry.getByRawId(modelId) ?: return Result.failure()
 
         val url = "https://huggingface.co/${descriptor.huggingFaceRepo}/resolve/main/${descriptor.huggingFaceFile}"
         val outputFile = File(modelRepository.modelsDir, descriptor.huggingFaceFile)

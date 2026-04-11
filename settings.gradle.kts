@@ -5,7 +5,7 @@ pluginManagement {
         gradlePluginPortal()
     }
 }
-dependencyResolution {
+dependencyResolutionManagement {
     repositories { google(); mavenCentral() }
 }
 rootProject.name = "Neuron"

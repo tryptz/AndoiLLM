@@ -33,7 +33,7 @@ fun ChatTopBar(
     TopAppBar(
         title = {
             TextButton(onClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onToggleModelSelector()
             }) {
                 Text(
@@ -68,7 +68,7 @@ fun ChatTopBar(
                 )
             }
             IconButton(onClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onToggleSettings()
             }) {
                 Icon(Icons.Default.Settings, "Settings")

@@ -83,7 +83,7 @@ fun ChatBubble(
                 onEdit = { onEditCode(block) },
                 onCopy = {
                     clipboard.setText(AnnotatedString(block.code))
-                    haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 }
             )
         }
@@ -181,7 +181,7 @@ fun CodeBlockCard(
                 Row {
                     if (isRunnable) {
                         IconButton(
-                            onClick = { haptic.performHapticFeedback(HapticFeedbackType.LightClick); onRun() },
+                            onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onRun() },
                             modifier = Modifier.size(28.dp)
                         ) {
                             Icon(
@@ -193,7 +193,7 @@ fun CodeBlockCard(
                         }
                     }
                     IconButton(
-                        onClick = { haptic.performHapticFeedback(HapticFeedbackType.LightClick); onEdit() },
+                        onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onEdit() },
                         modifier = Modifier.size(28.dp)
                     ) {
                         Icon(Icons.Default.Edit, "Edit", tint = Color(0xFF8B949E), modifier = Modifier.size(16.dp))

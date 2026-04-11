@@ -88,7 +88,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines)
     implementation(libs.markwon.core)
     implementation(libs.markwon.ext.tables)
-    implementation(libs.markwon.syntax)
+    implementation(libs.markwon.syntax) {
+        exclude(group = "org.jetbrains", module = "annotations-java5")
+    }
     implementation(libs.timber)
     implementation(libs.core.ktx)
     implementation(libs.activity.compose)

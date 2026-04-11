@@ -112,12 +112,12 @@ fun CodeEditorScreen(
                     // Copy
                     IconButton(onClick = {
                         clipboard.setText(AnnotatedString(code.text))
-                        haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     }) { Icon(Icons.Default.ContentCopy, "Copy") }
 
                     // Run
                     IconButton(onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         isRunning = true
                         // Execution would be launched via coroutine in a real impl
                     }) {
@@ -131,7 +131,7 @@ fun CodeEditorScreen(
 
                     // Send back to chat
                     IconButton(onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onSendToChat(code.text)
                         onBack()
                     }) { Icon(Icons.AutoMirrored.Filled.Send, "Send to chat") }

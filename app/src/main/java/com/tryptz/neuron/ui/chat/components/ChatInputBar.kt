@@ -37,12 +37,12 @@ fun ChatInputBar(
             verticalAlignment = Alignment.Bottom
         ) {
             if (capabilities?.vision == true) {
-                IconButton(onClick = { haptic.performHapticFeedback(HapticFeedbackType.LightClick); onCameraTap() }, modifier = Modifier.size(40.dp)) {
+                IconButton(onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onCameraTap() }, modifier = Modifier.size(40.dp)) {
                     Icon(Icons.Default.CameraAlt, "Camera", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             if (capabilities?.audio == true) {
-                IconButton(onClick = { haptic.performHapticFeedback(HapticFeedbackType.LightClick); onMicTap() }, modifier = Modifier.size(40.dp)) {
+                IconButton(onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onMicTap() }, modifier = Modifier.size(40.dp)) {
                     Icon(Icons.Default.Mic, "Microphone", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
@@ -70,7 +70,7 @@ fun ChatInputBar(
 
             FilledIconButton(
                 onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     if (isGenerating) {
                         onCancel()
                     } else if (inputText.text.isNotBlank()) {

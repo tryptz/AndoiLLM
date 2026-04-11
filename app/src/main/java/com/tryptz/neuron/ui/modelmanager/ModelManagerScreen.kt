@@ -242,7 +242,7 @@ private fun ModelCard(
                         }
                         Spacer(Modifier.height(4.dp))
                         OutlinedButton(onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             onCancelDownload()
                         }, modifier = Modifier.fillMaxWidth()) {
                             Text("Cancel")
@@ -258,7 +258,7 @@ private fun ModelCard(
                             modifier = Modifier.weight(1f)
                         )
                         OutlinedButton(onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             onDelete()
                         }) {
                             Icon(Icons.Default.Delete, null, Modifier.size(16.dp))
@@ -268,7 +268,7 @@ private fun ModelCard(
                 else -> {
                     Button(
                         onClick = {
-                            haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             onDownload()
                         },
                         modifier = Modifier.fillMaxWidth()

@@ -5,6 +5,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 
 @Composable
 fun SettingSlider(
@@ -24,7 +25,7 @@ fun SettingSlider(
             if (isModified) {
                 TextButton(
                     onClick = { onValueChange(default) },
-                    modifier = Modifier.height(28.dp.times(1))
+                    modifier = Modifier.height(28.dp)
                 ) {
                     Text("Reset", style = MaterialTheme.typography.labelSmall)
                 }

@@ -7,6 +7,7 @@ import com.tryptz.neuron.data.local.entity.MessageEntity
 import com.tryptz.neuron.domain.model.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import javax.inject.Inject
@@ -79,7 +80,7 @@ class ConversationRepository @Inject constructor(
         id = id, conversationId = conversationId,
         role = role.name, content = content,
         thinkingContent = thinkingContent,
-        imageUrisJson = if (imageUris.isNotEmpty()) json.encodeToString(kotlinx.serialization.builtins.ListSerializer(kotlinx.serialization.builtins.serializer<String>()), imageUris) else null,
+        imageUrisJson = if (imageUris.isNotEmpty()) json.encodeToString(imageUris) else null,
         timestampMs = timestampMs, tokenCount = tokenCount,
         tokensPerSec = tokensPerSec, parentId = parentId
     )
