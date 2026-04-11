@@ -19,18 +19,23 @@ class LoadModelUseCase @Inject constructor(
         modelId: String,
         settings: InferenceSettings
     ): Result<Unit> {
+        // Try registry model first, then local model
         val descriptor = modelRepo.getDescriptorById(modelId)
-            ?: return Result.failure(IllegalArgumentException("Unknown model: $modelId"))
-
         val modelPath = modelRepo.getModelPath(modelId)
-            ?: return Result.failure(IllegalStateException("Model not installed: $modelId"))
 
-        val result = inferenceEngine.loadModel(descriptor, modelPath, settings)
-
-        if (result.isSuccess) {
-            settingsStore.setActiveModel(modelId)
+        if (descriptor != null && modelPath != null) {
+            val result = inferenceEngine.loadModel(descriptor, modelPath, settings)
+            if (result.isSuccess) settingsStore.setActiveModel(modelId)
+            return result
         }
 
+        // Check local models
+        val localModel = modelRepo.getLocalModel(modelId)
+            ?: return Result.failure(IllegalArgumentException("Unknown model: $modelId"))
+
+        val localDescriptor = modelRepo.buildLocalDescriptor(localModel)
+        val result = inferenceEngine.loadModel(localDescriptor, localModel.filePath, settings)
+        if (result.isSuccess) settingsStore.setActiveModel(modelId)
         return result
     }
 }

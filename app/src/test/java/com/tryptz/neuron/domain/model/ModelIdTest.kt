@@ -15,6 +15,7 @@ class ModelIdTest {
         assertEquals(ModelId.QWEN25_7B, ModelId.fromRaw("qwen25-7b-q4km"))
         assertEquals(ModelId.PHI4_MINI, ModelId.fromRaw("phi4-3b-int4"))
         assertEquals(ModelId.MISTRAL_SMALL4, ModelId.fromRaw("mistral-small4-int4"))
+        assertEquals(ModelId.LOCAL, ModelId.fromRaw("local"))
     }
 
     @Test

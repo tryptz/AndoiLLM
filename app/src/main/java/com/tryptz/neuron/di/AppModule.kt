@@ -27,6 +27,7 @@ object AppModule {
     @Provides fun provideConversationDao(db: NeuronDatabase): ConversationDao = db.conversationDao()
     @Provides fun provideMessageDao(db: NeuronDatabase): MessageDao = db.messageDao()
     @Provides fun provideInstalledModelDao(db: NeuronDatabase): InstalledModelDao = db.installedModelDao()
+    @Provides fun provideLocalModelDao(db: NeuronDatabase): LocalModelDao = db.localModelDao()
     @Provides fun provideCodeSnippetDao(db: NeuronDatabase): CodeSnippetDao = db.codeSnippetDao()
 
     @Provides

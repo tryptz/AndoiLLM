@@ -60,13 +60,21 @@ class ChatViewModel @Inject constructor(
 
     init {
         viewModelScope.launch {
-            modelRepo.observeInstalled().collect { models ->
+            modelRepo.observeInstalled().combine(modelRepo.observeLocalModels()) { registry, local ->
+                registry + local.map { modelRepo.buildLocalDescriptor(it) }
+            }.collect { models ->
                 _uiState.update { it.copy(installedModels = models) }
             }
         }
         viewModelScope.launch {
             settingsStore.activeModelId.collect { id ->
-                _uiState.update { it.copy(activeModel = id?.let { modelRepo.getDescriptorById(it) }) }
+                _uiState.update { state ->
+                    val descriptor = id?.let { modelId ->
+                        modelRepo.getDescriptorById(modelId)
+                            ?: modelRepo.getLocalModel(modelId)?.let { modelRepo.buildLocalDescriptor(it) }
+                    }
+                    state.copy(activeModel = descriptor)
+                }
             }
         }
         viewModelScope.launch {

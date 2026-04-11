@@ -47,6 +47,18 @@ data class InstalledModelEntity(
     val installedAt: Long
 )
 
+@Entity(tableName = "local_models")
+data class LocalModelEntity(
+    @PrimaryKey val id: String,
+    val name: String,
+    val fileName: String,
+    val filePath: String,
+    val fileSizeBytes: Long,
+    val chatTemplate: String,
+    val contextLength: Int,
+    val installedAt: Long
+)
+
 @Entity(
     tableName = "code_snippets",
     foreignKeys = [ForeignKey(

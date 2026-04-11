@@ -88,6 +88,20 @@ class ModelRegistryTest {
     }
 
     @Test
+    fun `localId overrides id accessor`() {
+        val model = ModelRegistry[ModelId.LLAMA32_3B]
+        val localModel = model.copy(modelId = ModelId.LOCAL, localId = "custom-uuid-123")
+        assertEquals("custom-uuid-123", localModel.id)
+    }
+
+    @Test
+    fun `localId null falls back to modelId raw`() {
+        val model = ModelRegistry[ModelId.LLAMA32_3B]
+        assertNull(model.localId)
+        assertEquals(model.modelId.raw, model.id)
+    }
+
+    @Test
     fun `no duplicate model IDs in registry`() {
         val ids = ModelRegistry.models.map { it.modelId }
         assertEquals(ids.size, ids.toSet().size, "Duplicate model IDs in registry")

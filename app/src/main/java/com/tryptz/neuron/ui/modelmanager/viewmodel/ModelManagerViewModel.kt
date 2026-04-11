@@ -1,10 +1,11 @@
 package com.tryptz.neuron.ui.modelmanager.viewmodel
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
-import com.tryptz.neuron.data.model.ModelRegistry
+import com.tryptz.neuron.data.local.entity.LocalModelEntity
 import com.tryptz.neuron.data.repository.ModelRepository
 import com.tryptz.neuron.domain.model.*
 import com.tryptz.neuron.download.ModelDownloadWorker
@@ -18,10 +19,20 @@ data class ModelManagerUiState(
     val allModels: List<ModelDescriptor> = emptyList(),
     val installedModelIds: Set<String> = emptySet(),
     val recommendedModels: List<ModelDescriptor> = emptyList(),
+    val localModels: List<LocalModelEntity> = emptyList(),
     val downloads: Map<String, DownloadProgress> = emptyMap(),
     val availableRamMb: Int = 0,
     val totalRamMb: Int = 0,
-    val deleteConfirmModelId: String? = null
+    val deleteConfirmModelId: String? = null,
+    val deleteConfirmLocalId: String? = null,
+    val showImportDialog: Boolean = false,
+    val importUri: Uri? = null,
+    val importFileName: String = "",
+    val importName: String = "",
+    val importChatTemplate: ChatTemplate = ChatTemplate.CHATML,
+    val importContextLength: Int = 4096,
+    val isImporting: Boolean = false,
+    val importError: String? = null
 )
 
 @HiltViewModel
@@ -49,7 +60,15 @@ class ModelManagerViewModel @Inject constructor(
                 _uiState.update { it.copy(installedModelIds = installed.map { m -> m.id }.toSet()) }
             }
         }
+
+        viewModelScope.launch {
+            modelRepo.observeLocalModels().collect { locals ->
+                _uiState.update { it.copy(localModels = locals) }
+            }
+        }
     }
+
+    // ── Download (registry models) ──
 
     fun downloadModel(modelId: String) {
         val request = ModelDownloadWorker.buildRequest(modelId)
@@ -58,7 +77,6 @@ class ModelManagerViewModel @Inject constructor(
         viewModelScope.launch {
             workManager.getWorkInfoByIdFlow(request.id).collect { info ->
                 if (info == null) return@collect
-                val progress = info.progress.getInt(ModelDownloadWorker.KEY_PROGRESS, 0)
                 val downloaded = info.progress.getLong(ModelDownloadWorker.KEY_DOWNLOADED_BYTES, 0)
                 val total = info.progress.getLong(ModelDownloadWorker.KEY_TOTAL_BYTES, 0)
                 val speed = info.progress.getLong(ModelDownloadWorker.KEY_SPEED_BPS, 0)
@@ -103,6 +121,74 @@ class ModelManagerViewModel @Inject constructor(
         viewModelScope.launch {
             modelRepo.deleteModel(modelId)
             _uiState.update { it.copy(deleteConfirmModelId = null) }
+        }
+    }
+
+    // ── Local model import ──
+
+    fun onFileSelected(uri: Uri, fileName: String) {
+        val displayName = fileName.removeSuffix(".gguf")
+        _uiState.update {
+            it.copy(
+                showImportDialog = true,
+                importUri = uri,
+                importFileName = fileName,
+                importName = displayName,
+                importChatTemplate = ChatTemplate.CHATML,
+                importContextLength = 4096,
+                importError = null
+            )
+        }
+    }
+
+    fun updateImportName(name: String) {
+        _uiState.update { it.copy(importName = name) }
+    }
+
+    fun updateImportChatTemplate(template: ChatTemplate) {
+        _uiState.update { it.copy(importChatTemplate = template) }
+    }
+
+    fun updateImportContextLength(length: Int) {
+        _uiState.update { it.copy(importContextLength = length) }
+    }
+
+    fun dismissImportDialog() {
+        _uiState.update { it.copy(showImportDialog = false, importUri = null, importError = null) }
+    }
+
+    fun confirmImport() {
+        val state = _uiState.value
+        val uri = state.importUri ?: return
+
+        _uiState.update { it.copy(isImporting = true, importError = null) }
+
+        viewModelScope.launch {
+            modelRepo.importLocalModel(
+                uri = uri,
+                name = state.importName,
+                chatTemplate = state.importChatTemplate,
+                contextLength = state.importContextLength
+            ).onSuccess {
+                _uiState.update { it.copy(showImportDialog = false, importUri = null, isImporting = false) }
+            }.onFailure { e ->
+                _uiState.update { it.copy(isImporting = false, importError = e.message ?: "Import failed") }
+            }
+        }
+    }
+
+    fun confirmDeleteLocal(id: String) {
+        _uiState.update { it.copy(deleteConfirmLocalId = id) }
+    }
+
+    fun dismissDeleteLocal() {
+        _uiState.update { it.copy(deleteConfirmLocalId = null) }
+    }
+
+    fun deleteLocalModel(id: String) {
+        viewModelScope.launch {
+            modelRepo.deleteLocalModel(id)
+            _uiState.update { it.copy(deleteConfirmLocalId = null) }
         }
     }
 }

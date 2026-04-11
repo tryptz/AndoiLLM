@@ -1,5 +1,8 @@
 package com.tryptz.neuron.ui.modelmanager
 
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.layout.*
@@ -13,11 +16,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.tryptz.neuron.data.local.entity.LocalModelEntity
 import com.tryptz.neuron.domain.model.*
-import com.tryptz.neuron.ui.animation.MotionTokens
 import com.tryptz.neuron.ui.modelmanager.viewmodel.ModelManagerViewModel
 import com.tryptz.neuron.util.formatBytes
 import com.tryptz.neuron.util.formatDuration
@@ -31,8 +35,21 @@ fun ModelManagerScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val haptic = LocalHapticFeedback.current
+    val context = LocalContext.current
 
-    // Delete confirmation dialog
+    val filePicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        uri ?: return@rememberLauncherForActivityResult
+        val cursor = context.contentResolver.query(uri, null, null, null, null)
+        val fileName = cursor?.use {
+            val nameIndex = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+            if (it.moveToFirst() && nameIndex >= 0) it.getString(nameIndex) else null
+        } ?: "model.gguf"
+        viewModel.onFileSelected(uri, fileName)
+    }
+
+    // Delete confirmation dialog (registry models)
     state.deleteConfirmModelId?.let { modelId ->
         val model = state.allModels.find { it.id == modelId }
         AlertDialog(
@@ -47,6 +64,41 @@ fun ModelManagerScreen(
             dismissButton = {
                 TextButton(onClick = { viewModel.dismissDelete() }) { Text("Cancel") }
             }
+        )
+    }
+
+    // Delete confirmation dialog (local models)
+    state.deleteConfirmLocalId?.let { localId ->
+        val local = state.localModels.find { it.id == localId }
+        AlertDialog(
+            onDismissRequest = { viewModel.dismissDeleteLocal() },
+            title = { Text("Delete ${local?.name ?: "model"}?") },
+            text = { Text("This will remove the imported model file from app storage.") },
+            confirmButton = {
+                TextButton(onClick = { viewModel.deleteLocalModel(localId) }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { viewModel.dismissDeleteLocal() }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // Import configuration dialog
+    if (state.showImportDialog) {
+        ImportModelDialog(
+            fileName = state.importFileName,
+            name = state.importName,
+            chatTemplate = state.importChatTemplate,
+            contextLength = state.importContextLength,
+            isImporting = state.isImporting,
+            error = state.importError,
+            onNameChange = viewModel::updateImportName,
+            onTemplateChange = viewModel::updateImportChatTemplate,
+            onContextLengthChange = viewModel::updateImportContextLength,
+            onConfirm = viewModel::confirmImport,
+            onDismiss = viewModel::dismissImportDialog
         )
     }
 
@@ -87,6 +139,61 @@ fun ModelManagerScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
+                }
+            }
+
+            // Import local model button
+            item {
+                OutlinedCard(
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                        filePicker.launch(arrayOf("application/octet-stream", "*/*"))
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp).fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.FolderOpen,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("Import Local Model", style = MaterialTheme.typography.titleMedium)
+                            Text(
+                                "Load a GGUF model file from your device",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                        Icon(
+                            Icons.Default.Add,
+                            contentDescription = "Import",
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+            }
+
+            // Local models section
+            if (state.localModels.isNotEmpty()) {
+                item {
+                    Text(
+                        "Local Models",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(top = 8.dp)
+                    )
+                }
+                items(state.localModels, key = { "local_${it.id}" }) { local ->
+                    LocalModelCard(
+                        model = local,
+                        onDelete = { viewModel.confirmDeleteLocal(local.id) },
+                        modifier = Modifier.animateItem()
+                    )
                 }
             }
 
@@ -308,4 +415,184 @@ private fun CapBadge(text: String) {
             color = MaterialTheme.colorScheme.onSecondaryContainer
         )
     }
+}
+
+@Composable
+private fun LocalModelCard(
+    model: LocalModelEntity,
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val haptic = LocalHapticFeedback.current
+
+    OutlinedCard(modifier = modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    Icons.Default.FolderOpen,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.tertiary,
+                    modifier = Modifier.size(20.dp)
+                )
+                Spacer(Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(model.name, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        "${model.fileName} · ${ChatTemplate.fromRaw(model.chatTemplate).name}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                StatItem("Size", model.fileSizeBytes.formatBytes())
+                StatItem("Context", "${model.contextLength}")
+                StatItem("Template", ChatTemplate.fromRaw(model.chatTemplate).name)
+            }
+
+            Spacer(Modifier.height(12.dp))
+
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text("Imported") },
+                    leadingIcon = { Icon(Icons.Default.CheckCircle, null, Modifier.size(16.dp)) },
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedButton(onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                    onDelete()
+                }) {
+                    Icon(Icons.Default.Delete, null, Modifier.size(16.dp))
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ImportModelDialog(
+    fileName: String,
+    name: String,
+    chatTemplate: ChatTemplate,
+    contextLength: Int,
+    isImporting: Boolean,
+    error: String?,
+    onNameChange: (String) -> Unit,
+    onTemplateChange: (ChatTemplate) -> Unit,
+    onContextLengthChange: (Int) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var templateExpanded by remember { mutableStateOf(false) }
+    var contextExpanded by remember { mutableStateOf(false) }
+    val contextOptions = listOf(2048, 4096, 8192, 16384, 32768, 65536, 131072)
+
+    AlertDialog(
+        onDismissRequest = { if (!isImporting) onDismiss() },
+        title = { Text("Import Model") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "File: $fileName",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = onNameChange,
+                    label = { Text("Model Name") },
+                    singleLine = true,
+                    enabled = !isImporting,
+                    modifier = Modifier.fillMaxWidth()
+                )
+
+                // Chat template selector
+                ExposedDropdownMenuBox(
+                    expanded = templateExpanded,
+                    onExpandedChange = { if (!isImporting) templateExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = chatTemplate.name,
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Chat Template") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = templateExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = templateExpanded,
+                        onDismissRequest = { templateExpanded = false }
+                    ) {
+                        ChatTemplate.entries.forEach { template ->
+                            DropdownMenuItem(
+                                text = { Text(template.name) },
+                                onClick = {
+                                    onTemplateChange(template)
+                                    templateExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                // Context length selector
+                ExposedDropdownMenuBox(
+                    expanded = contextExpanded,
+                    onExpandedChange = { if (!isImporting) contextExpanded = it }
+                ) {
+                    OutlinedTextField(
+                        value = "$contextLength",
+                        onValueChange = {},
+                        readOnly = true,
+                        label = { Text("Context Length") },
+                        trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = contextExpanded) },
+                        modifier = Modifier.menuAnchor().fillMaxWidth()
+                    )
+                    ExposedDropdownMenu(
+                        expanded = contextExpanded,
+                        onDismissRequest = { contextExpanded = false }
+                    ) {
+                        contextOptions.forEach { length ->
+                            DropdownMenuItem(
+                                text = { Text("$length") },
+                                onClick = {
+                                    onContextLengthChange(length)
+                                    contextExpanded = false
+                                }
+                            )
+                        }
+                    }
+                }
+
+                if (isImporting) {
+                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                    Text(
+                        "Copying model file...",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+
+                error?.let {
+                    Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, enabled = !isImporting && name.isNotBlank()) {
+                Text("Import")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !isImporting) {
+                Text("Cancel")
+            }
+        }
+    )
 }
