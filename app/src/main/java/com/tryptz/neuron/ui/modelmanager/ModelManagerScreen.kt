@@ -146,7 +146,7 @@ fun ModelManagerScreen(
             item {
                 OutlinedCard(
                     onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                         filePicker.launch(arrayOf("application/octet-stream", "*/*"))
                     },
                     modifier = Modifier.fillMaxWidth()
@@ -463,7 +463,7 @@ private fun LocalModelCard(
                     modifier = Modifier.weight(1f)
                 )
                 OutlinedButton(onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.LightClick)
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                     onDelete()
                 }) {
                     Icon(Icons.Default.Delete, null, Modifier.size(16.dp))
