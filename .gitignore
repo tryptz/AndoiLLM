@@ -37,6 +37,7 @@ local.properties
 **/compile_commands.json
 
 # Packaged artifacts
+*.apk
 *.aab
 *.ap_
 

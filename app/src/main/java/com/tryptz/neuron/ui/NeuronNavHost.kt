@@ -3,6 +3,8 @@ package com.tryptz.neuron.ui
 import androidx.compose.animation.*
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -13,7 +15,16 @@ import com.tryptz.neuron.ui.animation.MotionTokens
 import com.tryptz.neuron.ui.chat.ChatScreen
 import com.tryptz.neuron.ui.editor.CodeEditorScreen
 import com.tryptz.neuron.ui.modelmanager.ModelManagerScreen
-import javax.inject.Inject
+import dagger.hilt.EntryPoint
+import dagger.hilt.InstallIn
+import dagger.hilt.android.EntryPointAccessors
+import dagger.hilt.components.SingletonComponent
+
+@EntryPoint
+@InstallIn(SingletonComponent::class)
+interface NeuronNavEntryPoint {
+    fun codeExecutor(): CodeExecutor
+}
 
 object Routes {
     const val CHAT = "chat"
@@ -77,11 +88,17 @@ fun NeuronNavHost() {
                 backStackEntry.arguments?.getString("code") ?: "", "UTF-8"
             )
             val language = backStackEntry.arguments?.getString("language") ?: "js"
+            val context = LocalContext.current
+            val codeExecutor = remember(context) {
+                EntryPointAccessors
+                    .fromApplication(context.applicationContext, NeuronNavEntryPoint::class.java)
+                    .codeExecutor()
+            }
 
             CodeEditorScreen(
                 initialCode = code,
                 initialLanguage = language,
-                codeExecutor = CodeExecutor(), // In prod, inject via Hilt
+                codeExecutor = codeExecutor,
                 onSendToChat = { /* Would send back via shared ViewModel */ },
                 onBack = { navController.popBackStack() }
             )
