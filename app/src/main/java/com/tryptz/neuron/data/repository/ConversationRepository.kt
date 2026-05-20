@@ -11,22 +11,35 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
 import javax.inject.Inject
-import javax.inject.Singleton
 
-@Singleton
-class ConversationRepository @Inject constructor(
+/**
+ * Abstraction over conversation/message persistence. Implemented by
+ * [ConversationRepositoryImpl] and bound via `di/RepositoryModule`.
+ */
+interface ConversationRepository {
+    fun observeConversations(): Flow<List<Conversation>>
+    fun observeMessages(conversationId: String): Flow<List<ChatMessage>>
+    suspend fun createConversation(modelId: String?, presetId: String? = null): Conversation
+    suspend fun addMessage(message: ChatMessage)
+    suspend fun getMessages(conversationId: String): List<ChatMessage>
+    suspend fun updateMessage(message: ChatMessage)
+    suspend fun deleteConversation(id: String)
+    suspend fun deleteMessagesAfter(conversationId: String, timestampMs: Long)
+}
+
+class ConversationRepositoryImpl @Inject constructor(
     private val conversationDao: ConversationDao,
     private val messageDao: MessageDao
-) {
+) : ConversationRepository {
     private val json = Json { ignoreUnknownKeys = true }
 
-    fun observeConversations(): Flow<List<Conversation>> =
+    override fun observeConversations(): Flow<List<Conversation>> =
         conversationDao.observeAll().map { list -> list.map { it.toDomain() } }
 
-    fun observeMessages(conversationId: String): Flow<List<ChatMessage>> =
+    override fun observeMessages(conversationId: String): Flow<List<ChatMessage>> =
         messageDao.observeByConversation(conversationId).map { list -> list.map { it.toDomain() } }
 
-    suspend fun createConversation(modelId: String?, presetId: String? = null): Conversation {
+    override suspend fun createConversation(modelId: String?, presetId: String?): Conversation {
         val now = System.currentTimeMillis()
         val conv = Conversation(
             id = UUID.randomUUID().toString(),
@@ -40,25 +53,37 @@ class ConversationRepository @Inject constructor(
         return conv
     }
 
-    suspend fun addMessage(message: ChatMessage) {
+    override suspend fun addMessage(message: ChatMessage) {
+        // Capture count BEFORE insert so the "first user message" check is accurate.
+        val priorCount = messageDao.countInConversation(message.conversationId)
         messageDao.insert(message.toEntity())
-        conversationDao.updateTitle(
-            id = message.conversationId,
-            title = if (message.role == MessageRole.USER && message.content.length <= 60) message.content
-                    else message.content.take(57) + "...",
-            updatedAt = message.timestampMs
-        )
+
+        if (message.role == MessageRole.USER && priorCount == 0) {
+            // First user message defines the conversation title.
+            conversationDao.updateTitle(
+                id = message.conversationId,
+                title = if (message.content.length <= 60) message.content
+                        else message.content.take(57) + "...",
+                updatedAt = message.timestampMs
+            )
+        } else {
+            // Assistant replies (and later user messages) only bump the timestamp.
+            conversationDao.touchConversation(message.conversationId, message.timestampMs)
+        }
     }
 
-    suspend fun updateMessage(message: ChatMessage) {
+    override suspend fun getMessages(conversationId: String): List<ChatMessage> =
+        messageDao.getByConversation(conversationId).map { it.toDomain() }
+
+    override suspend fun updateMessage(message: ChatMessage) {
         messageDao.update(message.toEntity())
     }
 
-    suspend fun deleteConversation(id: String) {
+    override suspend fun deleteConversation(id: String) {
         conversationDao.deleteById(id)
     }
 
-    suspend fun deleteMessagesAfter(conversationId: String, timestampMs: Long) {
+    override suspend fun deleteMessagesAfter(conversationId: String, timestampMs: Long) {
         messageDao.deleteAfter(conversationId, timestampMs)
     }
 
@@ -69,7 +94,8 @@ class ConversationRepository @Inject constructor(
 
     private fun MessageEntity.toDomain() = ChatMessage(
         id = id, conversationId = conversationId,
-        role = MessageRole.valueOf(role), content = content,
+        role = runCatching { MessageRole.valueOf(role) }.getOrDefault(MessageRole.USER),
+        content = content,
         thinkingContent = thinkingContent,
         imageUris = imageUrisJson?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrDefault(emptyList()) } ?: emptyList(),
         timestampMs = timestampMs, tokenCount = tokenCount,

@@ -16,8 +16,23 @@ class NeuronApp : Application(), Configuration.Provider {
 
     override fun onCreate() {
         super.onCreate()
-        if (BuildConfig.DEBUG) Timber.plant(Timber.DebugTree())
+        if (BuildConfig.DEBUG) {
+            Timber.plant(NeuronTree())
+            Timber.tag("Neuron.App").i("[op=app_start] version=${BuildConfig.VERSION_NAME} debug=true")
+        }
         createNotificationChannels()
+    }
+
+    /**
+     * Custom Timber tree that prefixes every auto-derived class-name tag with
+     * `Neuron.` — so `adb logcat | grep Neuron` captures the entire Kotlin side
+     * of the app while the native side already logs as `NeuronInference` /
+     * `LlamaCpp`. One grep keyword sees the whole stack.
+     */
+    private class NeuronTree : Timber.DebugTree() {
+        override fun createStackElementTag(element: StackTraceElement): String {
+            return "Neuron." + (super.createStackElementTag(element) ?: "App")
+        }
     }
 
     override val workManagerConfiguration: Configuration

@@ -10,6 +10,8 @@ plugins {
 android {
     namespace = "com.tryptz.neuron"
     compileSdk = 36
+    // AGP 8.7.3's default NDK (27.x) is not installed; pin to an available one.
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.tryptz.neuron"
@@ -21,8 +23,12 @@ android {
         ndk { abiFilters += listOf("arm64-v8a") }
         externalNativeBuild {
             cmake {
-                arguments("-DANDROID_STL=c++_shared", "-DLLAMA_VULKAN=ON", "-DLLAMA_QNN=OFF")
-                cppFlags("-std=c++20", "-O3", "-ffast-math")
+                // CPU-only first build — proven path on aarch64+proot.
+                // Flip LLAMA_VULKAN to ON to chase Adreno GPU speedups once CPU works.
+                arguments("-DANDROID_STL=c++_shared", "-DLLAMA_VULKAN=OFF", "-DLLAMA_QNN=OFF")
+                // -ffast-math implies -ffinite-math-only, which ggml's vec.h rejects
+                // (llama.cpp PR #7154). Override just that sub-flag while keeping the rest.
+                cppFlags("-std=c++20", "-O3", "-ffast-math", "-fno-finite-math-only")
             }
         }
     }
@@ -56,6 +62,12 @@ android {
 
 composeCompiler {
     stabilityConfigurationFile = rootProject.layout.projectDirectory.file("compose_stability.conf")
+}
+
+// Export the Room schema JSON on every build so migrations can diff against it.
+// Generated files land in app/schemas/<db-class-fqcn>/<version>.json and must be committed.
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {

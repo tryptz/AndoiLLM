@@ -13,7 +13,6 @@ import com.tryptz.neuron.ui.animation.MotionTokens
 import com.tryptz.neuron.ui.chat.ChatScreen
 import com.tryptz.neuron.ui.editor.CodeEditorScreen
 import com.tryptz.neuron.ui.modelmanager.ModelManagerScreen
-import javax.inject.Inject
 
 object Routes {
     const val CHAT = "chat"
@@ -24,7 +23,7 @@ object Routes {
 }
 
 @Composable
-fun NeuronNavHost() {
+fun NeuronNavHost(codeExecutor: CodeExecutor) {
     val navController = rememberNavController()
 
     NavHost(
@@ -81,7 +80,7 @@ fun NeuronNavHost() {
             CodeEditorScreen(
                 initialCode = code,
                 initialLanguage = language,
-                codeExecutor = CodeExecutor(), // In prod, inject via Hilt
+                codeExecutor = codeExecutor,
                 onSendToChat = { /* Would send back via shared ViewModel */ },
                 onBack = { navController.popBackStack() }
             )

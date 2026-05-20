@@ -50,21 +50,6 @@ fun ChatScreen(
         )
     }
 
-    // Settings side sheet
-    AnimatedVisibility(
-        visible = state.showSettings,
-        enter = MotionTokens.panelSlideIn(),
-        exit = MotionTokens.panelSlideOut()
-    ) {
-        SettingsPanel(
-            settings = settings, settingsLevel = settingsLevel,
-            activeModel = state.activeModel, telemetry = state.telemetry,
-            onUpdateSettings = viewModel::updateSettings,
-            onSetLevel = viewModel::setSettingsLevel,
-            onDismiss = { viewModel.toggleSettings() }
-        )
-    }
-
     Scaffold(
         topBar = {
             ChatTopBar(
@@ -134,6 +119,67 @@ fun ChatScreen(
                     action = { TextButton(onClick = { viewModel.clearError() }) { Text("Dismiss") } }
                 ) { Text(error) }
             }
+
+            // Transient success Snackbar after a model loads — auto-dismisses in 3s.
+            state.loadConfirmation?.let { msg ->
+                LaunchedEffect(msg) {
+                    kotlinx.coroutines.delay(3000)
+                    viewModel.clearLoadConfirmation()
+                }
+                Snackbar(
+                    modifier = Modifier.align(Alignment.BottomCenter).padding(16.dp),
+                    containerColor = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer
+                ) { Text(msg) }
+            }
         }
+    }
+
+    // Settings side sheet — emitted AFTER Scaffold so it overlays the chat
+    // UI when visible. Previously this block sat above Scaffold and the
+    // Scaffold drew on top, so tapping the settings icon "did nothing" from
+    // the user's POV (state.showSettings flipped, panel rendered, but chat UI
+    // covered it). Source order = z order for sibling composables.
+    AnimatedVisibility(
+        visible = state.showSettings,
+        enter = MotionTokens.panelSlideIn(),
+        exit = MotionTokens.panelSlideOut()
+    ) {
+        SettingsPanel(
+            settings = settings, settingsLevel = settingsLevel,
+            activeModel = state.activeModel, telemetry = state.telemetry,
+            onUpdateSettings = viewModel::updateSettings,
+            onSetLevel = viewModel::setSettingsLevel,
+            onDismiss = { viewModel.toggleSettings() }
+        )
+    }
+
+    // Modal load overlay — non-cancellable, full screen. Shown for the entire
+    // GC-settle + mmap window so the user has continuous feedback.
+    if (state.isLoadingModel) {
+        AlertDialog(
+            onDismissRequest = { /* loading is not cancellable mid-mmap */ },
+            confirmButton = {},
+            title = { Text("Loading model") },
+            text = {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.padding(vertical = 8.dp))
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        text = state.loadingStatus ?: "Working…",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        text = "This usually takes 10–30 seconds.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        )
     }
 }

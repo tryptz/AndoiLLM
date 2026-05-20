@@ -15,7 +15,15 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/llama_cpp/CMakeLists.txt")
     set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
+    # llama.cpp's `common` lib defaults to ${LLAMA_STANDALONE} (OFF when embedded).
+    # We link the JNI against it, so force-enable before add_subdirectory.
+    set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    # Disable OpenMP on Android — libomp threading boundaries don't match
+    # ggml's tensor stride assumptions on NDK 29, causing SIGSEGV in
+    # ggml_vec_dot_q4_K_q8_K under __kmp_invoke_microtask. llama.cpp's own
+    # std::thread pool is recommended on Android.
+    set(GGML_OPENMP OFF CACHE BOOL "" FORCE)
 
     if(LLAMA_VULKAN)
         set(GGML_VULKAN ON CACHE BOOL "" FORCE)
@@ -30,11 +38,13 @@ endif()
 
 # ── QuickJS ──
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/quickjs/quickjs.c")
+    # Bellard QuickJS post-2024-04 replaced libbf.c (bigfloat) with dtoa.c.
+    # The CLI tools (qjs.c, qjsc.c) and test runner are deliberately excluded.
     add_library(quickjs STATIC
         quickjs/quickjs.c
         quickjs/quickjs-libc.c
         quickjs/cutils.c
-        quickjs/libbf.c
+        quickjs/dtoa.c
         quickjs/libregexp.c
         quickjs/libunicode.c
     )
@@ -59,6 +69,11 @@ target_include_directories(neuron_inference PRIVATE
 )
 
 if(LLAMA_AVAILABLE)
+    # llama.cpp's `common` target doesn't PUBLIC-export its include dir, so
+    # add it explicitly for `#include "common.h"` to resolve.
+    target_include_directories(neuron_inference PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/llama_cpp/common
+    )
     target_link_libraries(neuron_inference PRIVATE llama ggml common)
     target_compile_definitions(neuron_inference PRIVATE LLAMA_AVAILABLE=1)
 else()

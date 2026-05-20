@@ -8,6 +8,8 @@ import com.tryptz.neuron.data.repository.ModelRepository
 import com.tryptz.neuron.domain.model.*
 import com.tryptz.neuron.domain.usecase.*
 import com.tryptz.neuron.inference.backend.InferenceEngine
+import com.tryptz.neuron.inference.backend.ThermalManager
+import timber.log.Timber
 import com.tryptz.neuron.util.DeviceMonitor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -30,7 +32,14 @@ data class ChatUiState(
     val showSettings: Boolean = false,
     val installedModels: List<ModelDescriptor> = emptyList(),
     val availableRamMb: Int = 0,
-    val error: String? = null
+    val error: String? = null,
+    // Model-load lifecycle: surfaces the 10-30s gap between selectModel() and
+    // the active-model flow updating. isLoadingModel drives the overlay;
+    // loadingStatus is the staged label inside it; loadConfirmation triggers
+    // a transient success Snackbar that auto-clears.
+    val isLoadingModel: Boolean = false,
+    val loadingStatus: String? = null,
+    val loadConfirmation: String? = null
 )
 
 @HiltViewModel
@@ -56,6 +65,7 @@ class ChatViewModel @Inject constructor(
         .stateIn(viewModelScope, SharingStarted.Eagerly, SettingsLevel.BASIC)
 
     private var generationJob: Job? = null
+    private var messagesJob: Job? = null
     private var conversationId: String? = null
 
     init {
@@ -78,18 +88,37 @@ class ChatViewModel @Inject constructor(
             }
         }
         viewModelScope.launch {
-            deviceMonitor.observeTelemetry().collect { t ->
-                _uiState.update { it.copy(telemetry = t, availableRamMb = t.ramTotalMb - t.ramUsedMb) }
+            // Merge device-monitor telemetry (battery/RAM) with inference-engine
+            // telemetry (tokSec/cpuTemp/thermalState) into one coherent snapshot
+            // so the two sources can't clobber each other's fields.
+            deviceMonitor.observeTelemetry().combine(inferenceEngine.telemetry) { device, inference ->
+                // Prefer the inference engine's CPU-temp reading when it has one
+                // (fresher during generation); fall back to the device monitor's
+                // when idle. Derive thermalState from whichever temp we display so
+                // the reported state can never disagree with the reported temp.
+                val cpuTemp = inference.cpuTempCelsius ?: device.cpuTempCelsius
+                device.copy(
+                    thermalState = ThermalManager.classify(cpuTemp),
+                    currentTokSec = inference.currentTokSec,
+                    cpuTempCelsius = cpuTemp
+                )
+            }.collect { merged ->
+                _uiState.update {
+                    it.copy(
+                        telemetry = merged,
+                        availableRamMb = merged.ramTotalMb - merged.ramUsedMb
+                    )
+                }
             }
-        }
-        viewModelScope.launch {
-            inferenceEngine.telemetry.collect { t -> _uiState.update { it.copy(telemetry = t) } }
         }
     }
 
     fun loadConversation(id: String) {
+        Timber.i("[op=load_conversation] convId=$id")
         conversationId = id
-        viewModelScope.launch {
+        // Cancel any prior collector so we don't leak coroutines and race on state.
+        messagesJob?.cancel()
+        messagesJob = viewModelScope.launch {
             conversationRepo.observeMessages(id).collect { msgs ->
                 _uiState.update { it.copy(messages = msgs) }
             }
@@ -98,18 +127,29 @@ class ChatViewModel @Inject constructor(
 
     fun sendMessage(text: String, imageUris: List<String> = emptyList()) {
         viewModelScope.launch {
-            val (convId, _) = sendMessage(text, conversationId, _uiState.value.activeModel?.id, imageUris)
-            conversationId = convId
-            startGeneration(convId)
+            val (convId, messages) = sendMessage(text, conversationId, _uiState.value.activeModel?.id, imageUris)
+            if (conversationId != convId) {
+                // New conversation: start observing its messages.
+                conversationId = convId
+                messagesJob?.cancel()
+                messagesJob = viewModelScope.launch {
+                    conversationRepo.observeMessages(convId).collect { msgs ->
+                        _uiState.update { it.copy(messages = msgs) }
+                    }
+                }
+            }
+            // Drive generation off the list returned by the use case, not the
+            // (possibly stale) state — the Room Flow may not have re-emitted yet.
+            startGeneration(convId, messages)
         }
     }
 
-    private fun startGeneration(convId: String) {
+    private fun startGeneration(convId: String, history: List<ChatMessage>) {
         generationJob?.cancel()
         generationJob = viewModelScope.launch {
             _uiState.update { it.copy(isGenerating = true, streamingContent = "", streamingThinking = "", error = null) }
 
-            generateResponse(_uiState.value.messages, settings.value, convId).collect { result ->
+            generateResponse(history, settings.value, convId).collect { result ->
                 when (result) {
                     is GenerationResult.Streaming -> _uiState.update {
                         it.copy(
@@ -132,6 +172,7 @@ class ChatViewModel @Inject constructor(
     }
 
     fun cancelGeneration() {
+        Timber.i("[op=cancel_generation] tokens_so_far=${_uiState.value.tokenCount}")
         generationJob?.cancel()
         inferenceEngine.cancelGeneration()
         _uiState.update { it.copy(isGenerating = false) }
@@ -142,7 +183,10 @@ class ChatViewModel @Inject constructor(
         viewModelScope.launch {
             val last = _uiState.value.messages.lastOrNull { it.role == MessageRole.ASSISTANT } ?: return@launch
             conversationRepo.deleteMessagesAfter(convId, last.timestampMs - 1)
-            startGeneration(convId)
+            // Re-query after the delete so generation runs on the trimmed history,
+            // not the stale in-memory list (the Room Flow may not have re-emitted).
+            val history = conversationRepo.getMessages(convId)
+            startGeneration(convId, history)
         }
     }
 
@@ -160,14 +204,62 @@ class ChatViewModel @Inject constructor(
     }
 
     fun selectModel(modelId: String) {
+        Timber.i("[op=select_model] modelId=$modelId")
         viewModelScope.launch {
+            _uiState.update {
+                it.copy(isLoadingModel = true, loadingStatus = "Freeing memory…", error = null)
+            }
+
+            // Explicit unload + GC to push the previous model's ~5 GB mmap out
+            // before allocating the next one. Without this, two large mmap
+            // regions are briefly resident and the lowmemorykiller can reap us.
+            val tFreeStart = System.currentTimeMillis()
+            inferenceEngine.unloadModel()
+            System.gc()
+            Runtime.getRuntime().gc()
+            kotlinx.coroutines.delay(150)  // let concurrent GC settle
+            Timber.i("[op=ram_freed] ms=${System.currentTimeMillis() - tFreeStart}")
+
+            val name = _uiState.value.installedModels.firstOrNull { it.id == modelId }?.name ?: "model"
+            _uiState.update { it.copy(loadingStatus = "Loading $name…") }
+
+            val tLoadStart = System.currentTimeMillis()
             loadModel(modelId, settings.value)
-                .onFailure { e -> _uiState.update { it.copy(error = e.message) } }
+                .onSuccess {
+                    val ms = System.currentTimeMillis() - tLoadStart
+                    Timber.i("[op=load_model_ok] modelId=$modelId name=\"$name\" ms=$ms")
+                    _uiState.update {
+                        it.copy(
+                            isLoadingModel = false,
+                            loadingStatus = null,
+                            loadConfirmation = "✓ $name loaded — ready to chat"
+                        )
+                    }
+                }
+                .onFailure { e ->
+                    val ms = System.currentTimeMillis() - tLoadStart
+                    Timber.e(e, "[op=load_model_fail] modelId=$modelId name=\"$name\" ms=$ms err=${e.message}")
+                    _uiState.update {
+                        it.copy(
+                            isLoadingModel = false,
+                            loadingStatus = null,
+                            error = e.message ?: "Failed to load $name"
+                        )
+                    }
+                }
         }
     }
 
-    fun toggleModelSelector() { _uiState.update { it.copy(showModelSelector = !it.showModelSelector) } }
-    fun toggleSettings() { _uiState.update { it.copy(showSettings = !it.showSettings) } }
+    fun clearLoadConfirmation() { _uiState.update { it.copy(loadConfirmation = null) } }
+
+    fun toggleModelSelector() {
+        _uiState.update { it.copy(showModelSelector = !it.showModelSelector) }
+        Timber.d("[op=toggle_model_selector] visible=${_uiState.value.showModelSelector}")
+    }
+    fun toggleSettings() {
+        _uiState.update { it.copy(showSettings = !it.showSettings) }
+        Timber.d("[op=toggle_settings] visible=${_uiState.value.showSettings}")
+    }
     fun clearError() { _uiState.update { it.copy(error = null) } }
 
     fun updateSettings(update: (InferenceSettings) -> InferenceSettings) {
@@ -180,8 +272,14 @@ class ChatViewModel @Inject constructor(
 
     fun newConversation() {
         conversationId = null
+        messagesJob?.cancel()
+        generationJob?.cancel()
         _uiState.update { it.copy(messages = emptyList(), conversation = null, streamingContent = "", isGenerating = false) }
     }
 
-    override fun onCleared() { generationJob?.cancel(); super.onCleared() }
+    override fun onCleared() {
+        generationJob?.cancel()
+        messagesJob?.cancel()
+        super.onCleared()
+    }
 }

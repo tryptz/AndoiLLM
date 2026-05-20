@@ -1,5 +1,6 @@
 package com.tryptz.neuron.data.model
 
+import com.tryptz.neuron.domain.model.ChatTemplate
 import com.tryptz.neuron.domain.model.InferenceBackend
 import com.tryptz.neuron.domain.model.ModelId
 import org.junit.Test
@@ -11,10 +12,18 @@ import kotlin.test.assertTrue
 class ModelRegistryTest {
 
     @Test
-    fun `all ModelId entries have a registry descriptor`() {
-        for (id in ModelId.entries) {
+    fun `all curated ModelId entries have a registry descriptor`() {
+        // ModelId.LOCAL is intentionally absent — it's the sentinel for
+        // user-imported GGUFs whose descriptor is built at runtime from the
+        // GGUF header, not from this curated catalog.
+        for (id in ModelId.entries.filter { it != ModelId.LOCAL }) {
             assertNotNull(ModelRegistry.getOrNull(id), "Missing registry entry for $id")
         }
+    }
+
+    @Test
+    fun `LOCAL is deliberately not in the curated registry`() {
+        assertNull(ModelRegistry.getOrNull(ModelId.LOCAL))
     }
 
     @Test
@@ -105,5 +114,85 @@ class ModelRegistryTest {
     fun `no duplicate model IDs in registry`() {
         val ids = ModelRegistry.models.map { it.modelId }
         assertEquals(ids.size, ids.toSet().size, "Duplicate model IDs in registry")
+    }
+
+    // ── New constraints added 2026-05-20 (verified URL catalog) ──
+
+    @Test
+    fun `every model has a positive file size and ram requirement`() {
+        for (model in ModelRegistry.models) {
+            assertTrue(model.fileSizeMb > 0, "${model.name} has fileSizeMb=${model.fileSizeMb}")
+            assertTrue(model.ramRequiredMb > 0, "${model.name} has ramRequiredMb=${model.ramRequiredMb}")
+        }
+    }
+
+    @Test
+    fun `ramRequiredMb is at least fileSizeMb for every model`() {
+        // mmap'd weights need the file backing pageable into memory, plus
+        // KV cache + activations overhead. ramRequired < fileSize would be
+        // a guaranteed OOM at load.
+        for (model in ModelRegistry.models) {
+            assertTrue(
+                model.ramRequiredMb >= model.fileSizeMb,
+                "${model.name}: ramRequired ${model.ramRequiredMb} < fileSize ${model.fileSizeMb}"
+            )
+        }
+    }
+
+    @Test
+    fun `every estimated tokSec range is positive and well-ordered`() {
+        for (model in ModelRegistry.models) {
+            for ((backend, range) in model.estimatedTokSec) {
+                assertTrue(range.first > 0, "${model.name}/$backend lower bound ${range.first}")
+                assertTrue(
+                    range.last >= range.first,
+                    "${model.name}/$backend range ${range.first}..${range.last} is inverted"
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `huggingFaceFile basename appears in huggingFaceRepo derivation`() {
+        // A working `/resolve/main/<file>` URL requires the file to actually
+        // exist in the repo. We can't hit the network in a unit test, but we
+        // can sanity-check the file name follows the GGUF naming conventions
+        // bartowski + ggml-org use (no slashes, no leading dot, ends .gguf).
+        for (model in ModelRegistry.models) {
+            assertTrue(
+                '/' !in model.huggingFaceFile,
+                "${model.name} file '${model.huggingFaceFile}' contains a slash"
+            )
+            assertTrue(
+                !model.huggingFaceFile.startsWith("."),
+                "${model.name} file '${model.huggingFaceFile}' starts with a dot"
+            )
+            assertTrue(
+                '/' in model.huggingFaceRepo,
+                "${model.name} repo '${model.huggingFaceRepo}' is missing org/name slash"
+            )
+        }
+    }
+
+    @Test
+    fun `maxContext is positive for every model`() {
+        for (model in ModelRegistry.models) {
+            assertTrue(model.maxContext > 0, "${model.name} has maxContext=${model.maxContext}")
+        }
+    }
+
+    @Test
+    fun `vision-capable models declare GEMMA template`() {
+        // Today only Gemma 3 ships true GGUF vision; if we add more, this
+        // test will fail and the catalog-author needs to declare the right
+        // template (Qwen2.5-VL would be CHATML, etc.).
+        val vision = ModelRegistry.models.filter { it.capabilities.vision }
+        assertTrue(vision.isNotEmpty(), "expected at least one vision-capable model")
+        for (model in vision) {
+            assertEquals(
+                ChatTemplate.GEMMA, model.chatTemplate,
+                "${model.name} is vision-capable but not on GEMMA template"
+            )
+        }
     }
 }

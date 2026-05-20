@@ -3,6 +3,7 @@
 #include <string>
 #include <chrono>
 #include <atomic>
+#include <thread>
 
 #define TAG "NeuronQuickJS"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)

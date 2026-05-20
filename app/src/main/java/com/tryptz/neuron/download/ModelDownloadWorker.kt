@@ -1,6 +1,5 @@
 package com.tryptz.neuron.download
 
-import android.app.NotificationManager
 import android.content.Context
 import androidx.core.app.NotificationCompat
 import androidx.hilt.work.HiltWorker
@@ -33,9 +32,38 @@ class ModelDownloadWorker @AssistedInject constructor(
         const val KEY_DOWNLOADED_BYTES = "downloaded_bytes"
         const val KEY_TOTAL_BYTES = "total_bytes"
         const val KEY_SPEED_BPS = "speed_bps"
-        private const val NOTIFICATION_ID = 1001
+        // Optional overrides for HF-browser-initiated downloads — when set, the
+        // worker uses these instead of the curated ModelRegistry lookup.
+        const val KEY_URL = "url"
+        const val KEY_FILENAME = "filename"
+        const val KEY_DISPLAY_NAME = "display_name"
+        const val KEY_SOURCE_REPO = "source_repo"
 
-        fun buildRequest(modelId: String): OneTimeWorkRequest {
+        /**
+         * Computes a download completion percentage (0..100) without throwing.
+         *
+         * Guards against a divide-by-zero when [total] is unknown (<= 0), which
+         * happens when the server omits Content-Length and the descriptor has no
+         * declared file size. In that case the percentage is unknown so 0 is
+         * returned and callers should show an indeterminate progress bar.
+         */
+        fun calculateProgress(downloaded: Long, total: Long): Int {
+            if (total <= 0L) return 0
+            val pct = (downloaded * 100) / total
+            return pct.coerceIn(0L, 100L).toInt()
+        }
+
+        /** Derives a stable, non-negative notification id from the model id so
+         *  concurrent downloads each get their own notification. */
+        fun notificationIdFor(modelId: String): Int = modelId.hashCode() and Int.MAX_VALUE
+
+        fun buildRequest(
+            modelId: String,
+            url: String? = null,
+            filename: String? = null,
+            displayName: String? = null,
+            sourceRepo: String? = null
+        ): OneTimeWorkRequest {
             val constraints = Constraints.Builder()
                 .setRequiredNetworkType(NetworkType.CONNECTED)
                 .setRequiresStorageNotLow(true)
@@ -43,7 +71,13 @@ class ModelDownloadWorker @AssistedInject constructor(
 
             return OneTimeWorkRequestBuilder<ModelDownloadWorker>()
                 .setConstraints(constraints)
-                .setInputData(workDataOf(KEY_MODEL_ID to modelId))
+                .setInputData(workDataOf(
+                    KEY_MODEL_ID to modelId,
+                    KEY_URL to url,
+                    KEY_FILENAME to filename,
+                    KEY_DISPLAY_NAME to displayName,
+                    KEY_SOURCE_REPO to sourceRepo
+                ))
                 .addTag("model_download_$modelId")
                 .build()
         }
@@ -51,26 +85,73 @@ class ModelDownloadWorker @AssistedInject constructor(
 
     override suspend fun doWork(): Result {
         val modelId = inputData.getString(KEY_MODEL_ID) ?: return Result.failure()
-        val descriptor = ModelRegistry.getByRawId(modelId) ?: return Result.failure()
+        val urlOverride = inputData.getString(KEY_URL)
+        val filenameOverride = inputData.getString(KEY_FILENAME)
+        val displayName = inputData.getString(KEY_DISPLAY_NAME)
+        val sourceRepo = inputData.getString(KEY_SOURCE_REPO)
+        val isHfDownload = urlOverride != null && filenameOverride != null
 
-        val url = "https://huggingface.co/${descriptor.huggingFaceRepo}/resolve/main/${descriptor.huggingFaceFile}"
-        val outputFile = File(modelRepository.modelsDir, descriptor.huggingFaceFile)
+        val url: String
+        val outputFileName: String
+        val modelName: String
+        val curatedDescriptorSize: Long
 
-        Timber.i("Starting download: ${descriptor.name} from $url")
+        if (isHfDownload) {
+            url = urlOverride!!
+            outputFileName = filenameOverride!!
+            modelName = displayName ?: outputFileName
+            curatedDescriptorSize = 0L
+        } else {
+            val descriptor = ModelRegistry.getByRawId(modelId) ?: return Result.failure()
+            url = "https://huggingface.co/${descriptor.huggingFaceRepo}/resolve/main/${descriptor.huggingFaceFile}"
+            outputFileName = descriptor.huggingFaceFile
+            modelName = descriptor.name
+            curatedDescriptorSize = descriptor.fileSizeMb.toLong() * 1024 * 1024
+        }
+        val outputFile = File(modelRepository.modelsDir, outputFileName)
 
-        setForeground(createForegroundInfo(descriptor.name, 0))
+        // Resume support: if a partial file exists, ask the server to continue
+        // from where we left off via a Range header.
+        val existingBytes = if (outputFile.exists()) outputFile.length() else 0L
+
+        Timber.i("[op=download_start] name=\"$modelName\" url=$url hf=$isHfDownload resume_from=$existingBytes")
+
+        setForeground(createForegroundInfo(modelName, modelId, 0))
 
         return try {
-            httpClient.prepareGet(url).execute { response ->
-                val totalBytes = response.contentLength() ?: (descriptor.fileSizeMb.toLong() * 1024 * 1024)
+            httpClient.prepareGet(url) {
+                if (existingBytes > 0L) {
+                    headers.append(HttpHeaders.Range, "bytes=$existingBytes-")
+                }
+            }.execute { response ->
+                // 206 Partial Content => server honored the Range request and we
+                // append. Anything else (typically 200) => restart from scratch.
+                val isResume = existingBytes > 0L &&
+                    response.status == HttpStatusCode.PartialContent
+
+                if (isResume) {
+                    Timber.i("Server supports resume; continuing from $existingBytes bytes")
+                } else if (existingBytes > 0L) {
+                    Timber.i("Server ignored Range (status ${response.status}); restarting download")
+                }
+
+                // For a 206, Content-Length is the *remaining* bytes, so the full
+                // size is contentLength + existingBytes. For a 200 it's the whole file.
+                val responseLength = response.contentLength()
+                val totalBytes = when {
+                    responseLength == null -> curatedDescriptorSize
+                    isResume -> responseLength + existingBytes
+                    else -> responseLength
+                }
+
                 val channel = response.bodyAsChannel()
-                var downloadedBytes = 0L
+                var downloadedBytes = if (isResume) existingBytes else 0L
                 val buffer = ByteArray(8192)
                 var lastProgressUpdate = 0L
                 var lastSpeedCalcTime = System.currentTimeMillis()
-                var lastSpeedCalcBytes = 0L
+                var lastSpeedCalcBytes = downloadedBytes
 
-                FileOutputStream(outputFile).use { fos ->
+                FileOutputStream(outputFile, /* append = */ isResume).use { fos ->
                     while (!channel.isClosedForRead) {
                         val read = channel.readAvailable(buffer)
                         if (read <= 0) break
@@ -84,45 +165,63 @@ class ModelDownloadWorker @AssistedInject constructor(
                             lastSpeedCalcTime = now
                             lastSpeedCalcBytes = downloadedBytes
 
-                            val progress = ((downloadedBytes * 100) / totalBytes).toInt()
+                            val progress = calculateProgress(downloadedBytes, totalBytes)
                             setProgress(workDataOf(
                                 KEY_PROGRESS to progress,
                                 KEY_DOWNLOADED_BYTES to downloadedBytes,
                                 KEY_TOTAL_BYTES to totalBytes,
                                 KEY_SPEED_BPS to speed
                             ))
-                            setForeground(createForegroundInfo(descriptor.name, progress))
+                            setForeground(createForegroundInfo(modelName, modelId, progress, totalBytes))
                             lastProgressUpdate = now
                         }
                     }
                 }
 
-                modelRepository.registerInstalled(
-                    descriptorId = modelId,
-                    filePath = outputFile.absolutePath,
-                    sizeBytes = downloadedBytes
-                )
+                if (isHfDownload) {
+                    // HF-initiated download → register as a LocalModelEntity so
+                    // it appears in the user's library (no curated descriptor).
+                    modelRepository.registerDownloadedGguf(
+                        filePath = outputFile.absolutePath,
+                        displayName = modelName,
+                        sourceRepo = sourceRepo
+                    )
+                } else {
+                    modelRepository.registerInstalled(
+                        descriptorId = modelId,
+                        filePath = outputFile.absolutePath,
+                        sizeBytes = downloadedBytes
+                    )
+                }
 
-                Timber.i("Download complete: ${descriptor.name}")
+                Timber.i("[op=download_complete] name=\"$modelName\" bytes=$downloadedBytes hf=$isHfDownload")
                 Result.success(workDataOf(KEY_MODEL_ID to modelId))
             }
         } catch (e: Exception) {
-            Timber.e(e, "Download failed: ${descriptor.name}")
-            outputFile.delete()
+            // Keep the partial file on disk so the next retry can resume from it
+            // instead of re-downloading multiple GB from byte 0.
+            Timber.e(e, "[op=download_fail] name=\"$modelName\" partial_kept_for_resume")
             Result.retry()
         }
     }
 
-    private fun createForegroundInfo(modelName: String, progress: Int): ForegroundInfo {
+    private fun createForegroundInfo(
+        modelName: String,
+        modelId: String,
+        progress: Int,
+        totalBytes: Long = 0L
+    ): ForegroundInfo {
+        // Indeterminate when we don't yet know the total size or progress is at 0%.
+        val indeterminate = totalBytes <= 0L || progress == 0
         val notification = NotificationCompat.Builder(applicationContext, NeuronApp.CHANNEL_DOWNLOADS)
             .setContentTitle("Downloading $modelName")
-            .setContentText("$progress%")
+            .setContentText(if (indeterminate) "Starting…" else "$progress%")
             .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setProgress(100, progress, progress == 0)
+            .setProgress(100, progress, indeterminate)
             .setOngoing(true)
             .setSilent(true)
             .build()
 
-        return ForegroundInfo(NOTIFICATION_ID, notification)
+        return ForegroundInfo(notificationIdFor(modelId), notification)
     }
 }

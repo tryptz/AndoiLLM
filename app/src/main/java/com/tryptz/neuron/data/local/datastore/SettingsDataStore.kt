@@ -13,68 +13,82 @@ import javax.inject.Singleton
 
 private val Context.settingsStore: DataStore<Preferences> by preferencesDataStore("neuron_settings")
 
+/**
+ * Preference keys for [SettingsDataStore]. `internal` (not `private`) so the
+ * pure [toInferenceSettings] mapper can be exercised by unit tests in the same module.
+ */
+internal object SettingsKeys {
+    val BACKEND = stringPreferencesKey("backend")
+    val TEMPERATURE = floatPreferencesKey("temperature")
+    val TOP_P = floatPreferencesKey("top_p")
+    val TOP_K = intPreferencesKey("top_k")
+    val MIN_P = floatPreferencesKey("min_p")
+    val REPEAT_PENALTY = floatPreferencesKey("repeat_penalty")
+    val CONTEXT_LENGTH = intPreferencesKey("context_length")
+    val SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
+    val REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
+    val MAX_THINKING_TOKENS = intPreferencesKey("max_thinking_tokens")
+    val THREAD_COUNT = intPreferencesKey("thread_count")
+    val NPU_PRECISION = stringPreferencesKey("npu_precision")
+    val BATCH_SIZE = intPreferencesKey("batch_size")
+    val KV_CACHE_QUANT = stringPreferencesKey("kv_cache_quant")
+    val THERMAL_POLICY = stringPreferencesKey("thermal_policy")
+    val BATTERY_SAVER = booleanPreferencesKey("battery_saver")
+    val MAX_TOK_SEC_CAP = intPreferencesKey("max_tok_sec_cap")
+    val BG_INFERENCE = booleanPreferencesKey("background_inference")
+    val WAKE_LOCK = booleanPreferencesKey("wake_lock")
+    val CODE_TIMEOUT = intPreferencesKey("code_timeout_sec")
+    val CODE_MEMORY = intPreferencesKey("code_memory_mb")
+    val CODE_NETWORK = booleanPreferencesKey("code_network_allowed")
+    val SETTINGS_LEVEL = stringPreferencesKey("settings_level")
+    val ACTIVE_MODEL_ID = stringPreferencesKey("active_model_id")
+    val ACTIVE_PRESET_ID = stringPreferencesKey("active_preset_id")
+    val DARK_MODE = booleanPreferencesKey("dark_mode")
+    val WIFI_ONLY_DOWNLOADS = booleanPreferencesKey("wifi_only_downloads")
+}
+
+/**
+ * Pure mapping from persisted [Preferences] to an [InferenceSettings]. Any key that is
+ * absent falls back to the [InferenceSettings] default. Extracted as a standalone,
+ * side-effect-free function so it can be used by both the `inferenceSettings` Flow and
+ * `updateSettings` (which must read the *real* current values before applying an edit),
+ * and so it is directly unit-testable on the JVM.
+ */
+internal fun Preferences.toInferenceSettings(): InferenceSettings = InferenceSettings(
+    backend = this[SettingsKeys.BACKEND]?.let { runCatching { InferenceBackend.valueOf(it) }.getOrNull() } ?: InferenceBackend.AUTO,
+    temperature = this[SettingsKeys.TEMPERATURE] ?: 0.7f,
+    topP = this[SettingsKeys.TOP_P] ?: 0.9f,
+    topK = this[SettingsKeys.TOP_K] ?: 40,
+    minP = this[SettingsKeys.MIN_P] ?: 0.05f,
+    repeatPenalty = this[SettingsKeys.REPEAT_PENALTY] ?: 1.1f,
+    contextLength = this[SettingsKeys.CONTEXT_LENGTH] ?: 4096,
+    systemPrompt = this[SettingsKeys.SYSTEM_PROMPT] ?: "",
+    reasoningEffort = this[SettingsKeys.REASONING_EFFORT]?.let { runCatching { ReasoningEffort.valueOf(it) }.getOrNull() } ?: ReasoningEffort.NONE,
+    maxThinkingTokens = this[SettingsKeys.MAX_THINKING_TOKENS] ?: 1024,
+    threadCount = this[SettingsKeys.THREAD_COUNT] ?: 0,
+    npuPrecision = this[SettingsKeys.NPU_PRECISION]?.let { runCatching { Quantization.valueOf(it) }.getOrNull() } ?: Quantization.INT4,
+    batchSize = this[SettingsKeys.BATCH_SIZE] ?: 512,
+    kvCacheQuant = this[SettingsKeys.KV_CACHE_QUANT]?.let { runCatching { Quantization.valueOf(it) }.getOrNull() } ?: Quantization.Q8_0,
+    thermalPolicy = this[SettingsKeys.THERMAL_POLICY]?.let { runCatching { ThermalPolicy.valueOf(it) }.getOrNull() } ?: ThermalPolicy.SLOW_DOWN,
+    batterySaver = this[SettingsKeys.BATTERY_SAVER] ?: false,
+    maxTokSecCap = this[SettingsKeys.MAX_TOK_SEC_CAP] ?: 0,
+    backgroundInference = this[SettingsKeys.BG_INFERENCE] ?: false,
+    wakeLock = this[SettingsKeys.WAKE_LOCK] ?: false,
+    codeTimeoutSec = this[SettingsKeys.CODE_TIMEOUT] ?: 10,
+    codeMemoryMb = this[SettingsKeys.CODE_MEMORY] ?: 64,
+    codeNetworkAllowed = this[SettingsKeys.CODE_NETWORK] ?: false
+)
+
 @Singleton
-class SettingsDataStore @Inject constructor(
+open class SettingsDataStore @Inject constructor(
     @ApplicationContext private val context: Context
 ) {
     private val store get() = context.settingsStore
 
-    // Keys
-    private object Keys {
-        val BACKEND = stringPreferencesKey("backend")
-        val TEMPERATURE = floatPreferencesKey("temperature")
-        val TOP_P = floatPreferencesKey("top_p")
-        val TOP_K = intPreferencesKey("top_k")
-        val MIN_P = floatPreferencesKey("min_p")
-        val REPEAT_PENALTY = floatPreferencesKey("repeat_penalty")
-        val CONTEXT_LENGTH = intPreferencesKey("context_length")
-        val SYSTEM_PROMPT = stringPreferencesKey("system_prompt")
-        val REASONING_EFFORT = stringPreferencesKey("reasoning_effort")
-        val MAX_THINKING_TOKENS = intPreferencesKey("max_thinking_tokens")
-        val THREAD_COUNT = intPreferencesKey("thread_count")
-        val NPU_PRECISION = stringPreferencesKey("npu_precision")
-        val BATCH_SIZE = intPreferencesKey("batch_size")
-        val KV_CACHE_QUANT = stringPreferencesKey("kv_cache_quant")
-        val THERMAL_POLICY = stringPreferencesKey("thermal_policy")
-        val BATTERY_SAVER = booleanPreferencesKey("battery_saver")
-        val MAX_TOK_SEC_CAP = intPreferencesKey("max_tok_sec_cap")
-        val BG_INFERENCE = booleanPreferencesKey("background_inference")
-        val WAKE_LOCK = booleanPreferencesKey("wake_lock")
-        val CODE_TIMEOUT = intPreferencesKey("code_timeout_sec")
-        val CODE_MEMORY = intPreferencesKey("code_memory_mb")
-        val CODE_NETWORK = booleanPreferencesKey("code_network_allowed")
-        val SETTINGS_LEVEL = stringPreferencesKey("settings_level")
-        val ACTIVE_MODEL_ID = stringPreferencesKey("active_model_id")
-        val ACTIVE_PRESET_ID = stringPreferencesKey("active_preset_id")
-        val DARK_MODE = booleanPreferencesKey("dark_mode")
-        val WIFI_ONLY_DOWNLOADS = booleanPreferencesKey("wifi_only_downloads")
-    }
+    private val Keys = SettingsKeys
 
     val inferenceSettings: Flow<InferenceSettings> = store.data.map { prefs ->
-        InferenceSettings(
-            backend = prefs[Keys.BACKEND]?.let { runCatching { InferenceBackend.valueOf(it) }.getOrNull() } ?: InferenceBackend.AUTO,
-            temperature = prefs[Keys.TEMPERATURE] ?: 0.7f,
-            topP = prefs[Keys.TOP_P] ?: 0.9f,
-            topK = prefs[Keys.TOP_K] ?: 40,
-            minP = prefs[Keys.MIN_P] ?: 0.05f,
-            repeatPenalty = prefs[Keys.REPEAT_PENALTY] ?: 1.1f,
-            contextLength = prefs[Keys.CONTEXT_LENGTH] ?: 4096,
-            systemPrompt = prefs[Keys.SYSTEM_PROMPT] ?: "",
-            reasoningEffort = prefs[Keys.REASONING_EFFORT]?.let { runCatching { ReasoningEffort.valueOf(it) }.getOrNull() } ?: ReasoningEffort.NONE,
-            maxThinkingTokens = prefs[Keys.MAX_THINKING_TOKENS] ?: 1024,
-            threadCount = prefs[Keys.THREAD_COUNT] ?: 0,
-            npuPrecision = prefs[Keys.NPU_PRECISION]?.let { runCatching { Quantization.valueOf(it) }.getOrNull() } ?: Quantization.INT4,
-            batchSize = prefs[Keys.BATCH_SIZE] ?: 512,
-            kvCacheQuant = prefs[Keys.KV_CACHE_QUANT]?.let { runCatching { Quantization.valueOf(it) }.getOrNull() } ?: Quantization.Q8_0,
-            thermalPolicy = prefs[Keys.THERMAL_POLICY]?.let { runCatching { ThermalPolicy.valueOf(it) }.getOrNull() } ?: ThermalPolicy.SLOW_DOWN,
-            batterySaver = prefs[Keys.BATTERY_SAVER] ?: false,
-            maxTokSecCap = prefs[Keys.MAX_TOK_SEC_CAP] ?: 0,
-            backgroundInference = prefs[Keys.BG_INFERENCE] ?: false,
-            wakeLock = prefs[Keys.WAKE_LOCK] ?: false,
-            codeTimeoutSec = prefs[Keys.CODE_TIMEOUT] ?: 10,
-            codeMemoryMb = prefs[Keys.CODE_MEMORY] ?: 64,
-            codeNetworkAllowed = prefs[Keys.CODE_NETWORK] ?: false
-        )
+        prefs.toInferenceSettings()
     }
 
     val settingsLevel: Flow<SettingsLevel> = store.data.map { prefs ->
@@ -88,7 +102,7 @@ class SettingsDataStore @Inject constructor(
 
     suspend fun updateSettings(block: (InferenceSettings) -> InferenceSettings) {
         store.edit { prefs ->
-            val current = InferenceSettings() // read current would be more correct but this is fine for updates
+            val current = prefs.toInferenceSettings()
             val updated = block(current)
             prefs[Keys.BACKEND] = updated.backend.name
             prefs[Keys.TEMPERATURE] = updated.temperature
@@ -115,7 +129,7 @@ class SettingsDataStore @Inject constructor(
         }
     }
 
-    suspend fun setActiveModel(modelId: String?) {
+    open suspend fun setActiveModel(modelId: String?) {
         store.edit { prefs ->
             if (modelId != null) prefs[Keys.ACTIVE_MODEL_ID] = modelId
             else prefs.remove(Keys.ACTIVE_MODEL_ID)

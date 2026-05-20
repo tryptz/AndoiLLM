@@ -24,7 +24,23 @@ object PromptFormatter {
         settings: InferenceSettings
     ): String {
         val formatter = formatters[descriptor.chatTemplate] ?: ::formatGeneric
-        return formatter(messages, settings)
+        // Apply reasoning-effort hint for reasoning-capable models. Qwen3 and
+        // DeepSeek-R1-distill recognize `/no_think` to suppress the <think> block;
+        // higher levels just let the model think normally. This is the cheapest
+        // wiring of settings.reasoningEffort that's actually model-visible.
+        val effectiveMessages = if (
+            descriptor.capabilities.reasoning &&
+            messages.isNotEmpty() &&
+            messages.last().role == MessageRole.USER
+        ) {
+            val suffix = when (settings.reasoningEffort) {
+                ReasoningEffort.NONE -> " /no_think"
+                ReasoningEffort.LOW, ReasoningEffort.MEDIUM, ReasoningEffort.HIGH -> ""
+            }
+            if (suffix.isEmpty()) messages
+            else messages.dropLast(1) + messages.last().copy(content = messages.last().content + suffix)
+        } else messages
+        return formatter(effectiveMessages, settings)
     }
 
     private fun formatChatML(messages: List<ChatMessage>, settings: InferenceSettings) = buildString {

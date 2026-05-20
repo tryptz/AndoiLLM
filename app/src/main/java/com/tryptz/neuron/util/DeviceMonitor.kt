@@ -6,7 +6,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
 import com.tryptz.neuron.domain.model.DeviceTelemetry
-import com.tryptz.neuron.domain.model.ThermalState
+import com.tryptz.neuron.inference.backend.ThermalManager
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -40,7 +40,7 @@ class DeviceMonitor @Inject constructor(
         val cpuTemp = readCpuTemperature()
 
         return DeviceTelemetry(
-            thermalState = classifyThermal(cpuTemp),
+            thermalState = ThermalManager.classify(cpuTemp),
             ramUsedMb = ((memInfo.totalMem - memInfo.availMem) / (1024 * 1024)).toInt(),
             ramTotalMb = (memInfo.totalMem / (1024 * 1024)).toInt(),
             batteryPercent = batteryPct,
@@ -76,13 +76,5 @@ class DeviceMonitor @Inject constructor(
             }
             null
         } catch (_: Exception) { null }
-    }
-
-    private fun classifyThermal(tempC: Float?): ThermalState = when {
-        tempC == null -> ThermalState.NOMINAL
-        tempC > 85f -> ThermalState.CRITICAL
-        tempC > 75f -> ThermalState.HOT
-        tempC > 65f -> ThermalState.WARM
-        else -> ThermalState.NOMINAL
     }
 }

@@ -6,6 +6,7 @@ import timber.log.Timber
  * JNI bridge to embedded QuickJS engine for sandboxed JavaScript execution.
  */
 object QuickJSBridge {
+    @Volatile
     private var loaded = false
 
     fun ensureLoaded() {

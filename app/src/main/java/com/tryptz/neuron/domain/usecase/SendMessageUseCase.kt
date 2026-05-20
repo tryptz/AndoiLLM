@@ -13,12 +13,17 @@ import javax.inject.Inject
 class SendMessageUseCase @Inject constructor(
     private val conversationRepo: ConversationRepository
 ) {
+    /**
+     * @return the conversation id paired with the full, up-to-date message
+     *   list (including the just-persisted user message) so callers can drive
+     *   generation without racing the Room observer.
+     */
     suspend operator fun invoke(
         text: String,
         conversationId: String?,
         modelId: String?,
         imageUris: List<String> = emptyList()
-    ): Pair<String, ChatMessage> {
+    ): Pair<String, List<ChatMessage>> {
         val convId = conversationId ?: conversationRepo.createConversation(
             modelId = modelId
         ).id
@@ -32,6 +37,6 @@ class SendMessageUseCase @Inject constructor(
         )
         conversationRepo.addMessage(userMsg)
 
-        return convId to userMsg
+        return convId to conversationRepo.getMessages(convId)
     }
 }

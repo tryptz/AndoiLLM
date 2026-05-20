@@ -7,6 +7,7 @@ import timber.log.Timber
  * All methods marshal data between Kotlin and the C++ inference engine.
  */
 object LlamaBridge {
+    @Volatile
     private var loaded = false
 
     fun ensureLoaded() {

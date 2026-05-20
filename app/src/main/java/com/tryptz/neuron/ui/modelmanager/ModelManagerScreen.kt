@@ -5,9 +5,11 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -21,7 +23,11 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.tryptz.neuron.data.local.entity.LocalModelEntity
+import com.tryptz.neuron.data.remote.HfFile
+import com.tryptz.neuron.data.remote.HfRepoSummary
+import com.tryptz.neuron.data.remote.HfSort
 import com.tryptz.neuron.domain.model.*
+import com.tryptz.neuron.ui.modelmanager.viewmodel.ModelManagerUiState
 import com.tryptz.neuron.ui.modelmanager.viewmodel.ModelManagerViewModel
 import com.tryptz.neuron.util.formatBytes
 import com.tryptz.neuron.util.formatDuration
@@ -143,6 +149,18 @@ fun ModelManagerScreen(
                         )
                     }
                 }
+            }
+
+            // Discover on Hugging Face — search GGUF repos, sort by trending /
+            // popular / updated / newest, expand a repo to pick a quant file.
+            item {
+                DiscoverSection(
+                    state = state,
+                    onQueryChange = viewModel::setHfQuery,
+                    onSortChange = viewModel::setHfSort,
+                    onToggleRepo = viewModel::toggleHfRepo,
+                    onDownloadFile = viewModel::downloadHfFile
+                )
             }
 
             // Import local model button
@@ -646,4 +664,168 @@ private fun ImportModelDialog(
             }
         }
     )
+}
+
+// ── HF browser ──
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DiscoverSection(
+    state: ModelManagerUiState,
+    onQueryChange: (String) -> Unit,
+    onSortChange: (HfSort) -> Unit,
+    onToggleRepo: (String) -> Unit,
+    onDownloadFile: (String, HfFile) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerLow
+        )
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
+            Text("Discover on Hugging Face", style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = state.hfQuery,
+                onValueChange = onQueryChange,
+                placeholder = { Text("Search GGUF models…") },
+                leadingIcon = { Icon(Icons.Default.Search, null) },
+                trailingIcon = {
+                    if (state.hfSearching) CircularProgressIndicator(
+                        modifier = Modifier.size(20.dp), strokeWidth = 2.dp
+                    )
+                },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                shape = MaterialTheme.shapes.large
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                HfSort.entries.forEach { s ->
+                    FilterChip(
+                        selected = s == state.hfSort,
+                        onClick = { onSortChange(s) },
+                        label = { Text(s.label) }
+                    )
+                }
+            }
+
+            state.hfError?.let { msg ->
+                Spacer(Modifier.height(8.dp))
+                Text(msg, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+
+            if (state.hfResults.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
+                state.hfResults.take(20).forEach { repo ->
+                    HfRepoCard(repo, state, onToggleRepo, onDownloadFile)
+                    Spacer(Modifier.height(8.dp))
+                }
+            } else if (!state.hfSearching) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "No results. Try a query like 'qwen3' or 'gemma 3'.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun HfRepoCard(
+    repo: HfRepoSummary,
+    state: ModelManagerUiState,
+    onToggleRepo: (String) -> Unit,
+    onDownloadFile: (String, HfFile) -> Unit
+) {
+    val expanded = state.hfExpandedRepo == repo.id
+    OutlinedCard(
+        modifier = Modifier.fillMaxWidth(),
+        onClick = { onToggleRepo(repo.id) }
+    ) {
+        Column(modifier = Modifier.padding(12.dp)) {
+            Text(repo.id, style = MaterialTheme.typography.titleSmall, maxLines = 2)
+            Spacer(Modifier.height(4.dp))
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("⬇ ${formatCompactInt(repo.downloads)}", style = MaterialTheme.typography.bodySmall)
+                Text("♥ ${formatCompactInt(repo.likes)}", style = MaterialTheme.typography.bodySmall)
+                repo.lastModified?.let {
+                    Text("✎ ${it.take(10)}", style = MaterialTheme.typography.bodySmall)
+                }
+            }
+
+            if (expanded) {
+                Spacer(Modifier.height(8.dp))
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                when {
+                    state.hfLoadingFiles -> Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Loading files…", style = MaterialTheme.typography.bodySmall)
+                    }
+                    state.hfRepoFiles.isEmpty() -> Text(
+                        "No .gguf files in this repo.",
+                        style = MaterialTheme.typography.bodySmall
+                    )
+                    else -> state.hfRepoFiles.forEach { file ->
+                        val syntheticId = "hf:${repo.id.replace('/', '_')}:${file.path}"
+                        val prog = state.downloads[syntheticId]
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    file.path.substringAfterLast('/'),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1
+                                )
+                                file.size?.let {
+                                    Text(
+                                        formatBytes(it),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                            if (prog != null) {
+                                val pct = if (prog.totalBytes > 0)
+                                    (prog.bytesDownloaded * 100 / prog.totalBytes).toInt() else 0
+                                Text("$pct%", style = MaterialTheme.typography.labelMedium)
+                            } else {
+                                FilledTonalButton(onClick = { onDownloadFile(repo.id, file) }) {
+                                    Icon(Icons.Default.Download, null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(4.dp))
+                                    Text("Get")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private fun formatCompactInt(n: Int): String = when {
+    n >= 1_000_000 -> "${n / 1_000_000}M"
+    n >= 1_000 -> "${n / 1_000}k"
+    else -> n.toString()
 }

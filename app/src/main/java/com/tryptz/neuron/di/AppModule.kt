@@ -22,7 +22,7 @@ object AppModule {
     @Singleton
     fun provideDatabase(@ApplicationContext context: Context): NeuronDatabase =
         Room.databaseBuilder(context, NeuronDatabase::class.java, "neuron.db")
-            .fallbackToDestructiveMigration()
+            .addMigrations(*NeuronDatabase.MIGRATIONS)
             .build()
 
     @Provides fun provideConversationDao(db: NeuronDatabase): ConversationDao = db.conversationDao()

@@ -26,20 +26,62 @@ private data class JsError(
     val line: Int? = null
 )
 
-@Singleton
-class CodeExecutor @Inject constructor() {
-
-    private val json = Json { ignoreUnknownKeys = true }
-
+/**
+ * Public contract for the sandboxed code-execution engine.
+ * Consumers depend on this interface; the concrete implementation is
+ * [CodeExecutorImpl], bound in InferenceModule.
+ *
+ * SECURITY: Bash execution pipes code straight to /system/bin/sh. It is therefore
+ * gated: [execute] runs a BASH block only when [confirmed] is true, which the
+ * Code Editor screen sets exclusively after an explicit per-run user confirmation.
+ * The chat path (ExecuteCodeUseCase) never passes confirmed=true, and
+ * [detectLanguage] never classifies code as BASH — so bash can never run
+ * implicitly from an LLM-generated chat code block.
+ */
+interface CodeExecutor {
+    /**
+     * @param confirmed must be true to run [CodeLanguage.BASH]; ignored for all
+     *   other languages. Defaults to false so existing callers refuse bash safely.
+     */
     suspend fun execute(
         code: String,
         language: CodeLanguage,
-        settings: InferenceSettings
+        settings: InferenceSettings,
+        confirmed: Boolean = false
+    ): CodeOutput
+
+    /** Best-effort language detection. NEVER returns [CodeLanguage.BASH]. */
+    fun detectLanguage(code: String): CodeLanguage
+}
+
+@Singleton
+class CodeExecutorImpl @Inject constructor() : CodeExecutor {
+
+    private val json = Json { ignoreUnknownKeys = true }
+
+    override suspend fun execute(
+        code: String,
+        language: CodeLanguage,
+        settings: InferenceSettings,
+        confirmed: Boolean
     ): CodeOutput = withContext(Dispatchers.IO) {
         when (language) {
             CodeLanguage.JAVASCRIPT -> executeJavaScript(code, settings)
             CodeLanguage.PYTHON -> executePython(code, settings)
-            CodeLanguage.BASH -> executeBash(code, settings)
+            CodeLanguage.BASH -> {
+                if (!confirmed) {
+                    Timber.w("Refused unconfirmed bash execution")
+                    CodeOutput(
+                        error = CodeError(
+                            ErrorType.SECURITY,
+                            "Shell execution must be explicitly confirmed by the user " +
+                                "from the Code Editor. It cannot run from chat."
+                        )
+                    )
+                } else {
+                    executeBash(code, settings)
+                }
+            }
             CodeLanguage.HTML -> CodeOutput(htmlPreview = code)
             CodeLanguage.UNKNOWN -> CodeOutput(stderr = "Unsupported language")
         }
@@ -122,6 +164,10 @@ class CodeExecutor @Inject constructor() {
         )
     }
 
+    /**
+     * Runs a shell command. SECURITY-SENSITIVE: only reachable from [execute] when
+     * the caller passed confirmed=true (Code Editor, post user confirmation).
+     */
     private fun executeBash(code: String, settings: InferenceSettings): CodeOutput {
         return try {
             val process = ProcessBuilder("/system/bin/sh", "-c", code)
@@ -152,16 +198,18 @@ class CodeExecutor @Inject constructor() {
         }
     }
 
-    fun detectLanguage(code: String): CodeLanguage {
+    /**
+     * Heuristic language detection. Deliberately NEVER returns [CodeLanguage.BASH]:
+     * shell code must be selected explicitly in the Code Editor, never auto-detected,
+     * to keep LLM-generated chat output from being silently classified as runnable shell.
+     */
+    override fun detectLanguage(code: String): CodeLanguage {
         val trimmed = code.trim()
         return when {
             trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<html") -> CodeLanguage.HTML
-            trimmed.startsWith("#!/bin/bash") || trimmed.startsWith("#!/bin/sh") -> CodeLanguage.BASH
             trimmed.contains("def ") || trimmed.contains("import ") && !trimmed.contains("require(") -> CodeLanguage.PYTHON
             trimmed.contains("function ") || trimmed.contains("const ") || trimmed.contains("let ") ||
                 trimmed.contains("var ") || trimmed.contains("=>") || trimmed.contains("console.") -> CodeLanguage.JAVASCRIPT
-            trimmed.startsWith("grep ") || trimmed.startsWith("echo ") || trimmed.startsWith("cat ") ||
-                trimmed.startsWith("ls ") || trimmed.startsWith("awk ") -> CodeLanguage.BASH
             else -> CodeLanguage.UNKNOWN
         }
     }

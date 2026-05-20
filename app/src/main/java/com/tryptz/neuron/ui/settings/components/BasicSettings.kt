@@ -28,7 +28,7 @@ fun BasicSettings(
 
         val maxCtx = activeModel?.maxContext ?: 131072
         SettingSlider(
-            label = "Context Length",
+            label = "Context Length (reload required)",
             value = settings.contextLength.toFloat(),
             range = 512f..maxCtx.toFloat(),
             default = 4096f,

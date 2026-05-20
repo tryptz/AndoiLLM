@@ -50,6 +50,24 @@ static float read_cpu_temperature() {
     return -1.0f;
 }
 
+#if LLAMA_AVAILABLE
+// llama.cpp/ggml emit diagnostics via a log callback whose default writes to
+// stderr — on Android that goes to /dev/null, hiding all model-load reasons.
+// Route them to logcat under tag "LlamaCpp" so failures surface.
+static void neuron_llama_log_cb(ggml_log_level level, const char* text, void* /*user_data*/) {
+    if (!text || !*text) return;
+    int prio;
+    switch (level) {
+        case GGML_LOG_LEVEL_ERROR: prio = ANDROID_LOG_ERROR; break;
+        case GGML_LOG_LEVEL_WARN:  prio = ANDROID_LOG_WARN;  break;
+        case GGML_LOG_LEVEL_INFO:  prio = ANDROID_LOG_INFO;  break;
+        case GGML_LOG_LEVEL_DEBUG: prio = ANDROID_LOG_DEBUG; break;
+        default:                   prio = ANDROID_LOG_INFO;
+    }
+    __android_log_print(prio, "LlamaCpp", "%s", text);
+}
+#endif
+
 extern "C" {
 
 // ── Model lifecycle ──
@@ -62,6 +80,14 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_loadModel(
     jint kvCacheTypeQuant)
 {
 #if LLAMA_AVAILABLE
+    // Install logcat-routed log callback once. Without this, llama.cpp's
+    // own load/init diagnostics are invisible on Android.
+    static bool log_installed = false;
+    if (!log_installed) {
+        llama_log_set(neuron_llama_log_cb, nullptr);
+        log_installed = true;
+    }
+
     const char* path = env->GetStringUTFChars(modelPath, nullptr);
     LOGI("Loading model: %s", path);
 
@@ -82,6 +108,10 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_loadModel(
     cparams.n_batch = batchSize;
     cparams.n_threads = threadCount > 0 ? threadCount : 4;
     cparams.n_threads_batch = cparams.n_threads;
+
+    // Flash attention is REQUIRED when the V cache is quantized (Q8_0/Q4_0) —
+    // the standard attention kernel only supports F16 V. Also faster on CPU.
+    cparams.flash_attn = true;
 
     // KV cache quantization
     switch (kvCacheTypeQuant) {
@@ -174,11 +204,17 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_startCompletion(
     // Configure sampler
     if (mc->sampler) llama_sampler_free(mc->sampler);
     mc->sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    llama_sampler_chain_add(mc->sampler, llama_sampler_init_temp(temperature));
+    // Canonical llama.cpp sampler chain order: penalties → top_k → top_p →
+    // min_p → temp → DIST. The terminal `dist` sampler is mandatory — filter
+    // samplers only mask the probability distribution; without dist no token
+    // is selected and llama_sampler_sample asserts (ggml_abort).
+    // penalty_last_n=64 matches llama.cpp CLI default.
+    llama_sampler_chain_add(mc->sampler, llama_sampler_init_penalties(64, repeatPenalty, 0.0f, 0.0f));
     llama_sampler_chain_add(mc->sampler, llama_sampler_init_top_k(topK));
     llama_sampler_chain_add(mc->sampler, llama_sampler_init_top_p(topP, 1));
     llama_sampler_chain_add(mc->sampler, llama_sampler_init_min_p(minP, 1));
-    llama_sampler_chain_add(mc->sampler, llama_sampler_init_penalties(repeatPenalty, 0.0f, 0.0f));
+    llama_sampler_chain_add(mc->sampler, llama_sampler_init_temp(temperature));
+    llama_sampler_chain_add(mc->sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
     // Eval prompt
     llama_batch batch = llama_batch_get_one(tokens.data(), n_tokens);

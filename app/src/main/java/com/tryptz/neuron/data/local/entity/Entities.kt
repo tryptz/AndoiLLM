@@ -38,7 +38,10 @@ data class MessageEntity(
     val parentId: String?
 )
 
-@Entity(tableName = "installed_models")
+@Entity(
+    tableName = "installed_models",
+    indices = [Index("descriptorId")]
+)
 data class InstalledModelEntity(
     @PrimaryKey val id: String,
     val descriptorId: String,

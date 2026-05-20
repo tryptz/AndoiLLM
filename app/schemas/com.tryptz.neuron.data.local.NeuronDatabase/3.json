@@ -1,0 +1,380 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 3,
+    "identityHash": "f41b52cf548f012cd5ae3dd795cb9dfc",
+    "entities": [
+      {
+        "tableName": "conversations",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `title` TEXT NOT NULL, `modelId` TEXT, `presetId` TEXT, `createdAt` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "modelId",
+            "columnName": "modelId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "presetId",
+            "columnName": "presetId",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "messages",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `conversationId` TEXT NOT NULL, `role` TEXT NOT NULL, `content` TEXT NOT NULL, `thinkingContent` TEXT, `imageUrisJson` TEXT, `timestampMs` INTEGER NOT NULL, `tokenCount` INTEGER, `tokensPerSec` REAL, `parentId` TEXT, PRIMARY KEY(`id`), FOREIGN KEY(`conversationId`) REFERENCES `conversations`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "conversationId",
+            "columnName": "conversationId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "role",
+            "columnName": "role",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "content",
+            "columnName": "content",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "thinkingContent",
+            "columnName": "thinkingContent",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "imageUrisJson",
+            "columnName": "imageUrisJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "timestampMs",
+            "columnName": "timestampMs",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "tokenCount",
+            "columnName": "tokenCount",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "tokensPerSec",
+            "columnName": "tokensPerSec",
+            "affinity": "REAL"
+          },
+          {
+            "fieldPath": "parentId",
+            "columnName": "parentId",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_messages_conversationId",
+            "unique": false,
+            "columnNames": [
+              "conversationId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_messages_conversationId` ON `${TABLE_NAME}` (`conversationId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "conversations",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "conversationId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "installed_models",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `descriptorId` TEXT NOT NULL, `filePath` TEXT NOT NULL, `fileSizeBytes` INTEGER NOT NULL, `installedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "descriptorId",
+            "columnName": "descriptorId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "filePath",
+            "columnName": "filePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileSizeBytes",
+            "columnName": "fileSizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "installedAt",
+            "columnName": "installedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_installed_models_descriptorId",
+            "unique": false,
+            "columnNames": [
+              "descriptorId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_installed_models_descriptorId` ON `${TABLE_NAME}` (`descriptorId`)"
+          }
+        ]
+      },
+      {
+        "tableName": "local_models",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `name` TEXT NOT NULL, `fileName` TEXT NOT NULL, `filePath` TEXT NOT NULL, `fileSizeBytes` INTEGER NOT NULL, `chatTemplate` TEXT NOT NULL, `contextLength` INTEGER NOT NULL, `architecture` TEXT, `quantization` TEXT, `parameterCount` INTEGER, `installedAt` INTEGER NOT NULL, PRIMARY KEY(`id`))",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileName",
+            "columnName": "fileName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "filePath",
+            "columnName": "filePath",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fileSizeBytes",
+            "columnName": "fileSizeBytes",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "chatTemplate",
+            "columnName": "chatTemplate",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "contextLength",
+            "columnName": "contextLength",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "architecture",
+            "columnName": "architecture",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "quantization",
+            "columnName": "quantization",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "parameterCount",
+            "columnName": "parameterCount",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "installedAt",
+            "columnName": "installedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        }
+      },
+      {
+        "tableName": "code_snippets",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` TEXT NOT NULL, `messageId` TEXT NOT NULL, `language` TEXT NOT NULL, `code` TEXT NOT NULL, `stdout` TEXT, `stderr` TEXT, `returnValue` TEXT, `executionTimeMs` INTEGER, `memoryUsedBytes` INTEGER, `errorJson` TEXT, `version` INTEGER NOT NULL, `createdAt` INTEGER NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`messageId`) REFERENCES `messages`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "messageId",
+            "columnName": "messageId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "language",
+            "columnName": "language",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "code",
+            "columnName": "code",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stdout",
+            "columnName": "stdout",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "stderr",
+            "columnName": "stderr",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "returnValue",
+            "columnName": "returnValue",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "executionTimeMs",
+            "columnName": "executionTimeMs",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "memoryUsedBytes",
+            "columnName": "memoryUsedBytes",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "errorJson",
+            "columnName": "errorJson",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "version",
+            "columnName": "version",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_code_snippets_messageId",
+            "unique": false,
+            "columnNames": [
+              "messageId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_code_snippets_messageId` ON `${TABLE_NAME}` (`messageId`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "messages",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "messageId"
+            ],
+            "referencedColumns": [
+              "id"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'f41b52cf548f012cd5ae3dd795cb9dfc')"
+    ]
+  }
+}

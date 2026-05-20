@@ -32,6 +32,7 @@ import com.tryptz.neuron.code.sandbox.CodeExecutor
 import com.tryptz.neuron.domain.model.*
 import com.tryptz.neuron.ui.chat.components.CodeOutputPanel
 import com.tryptz.neuron.ui.theme.CodeFontFamily
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,14 +54,36 @@ fun CodeEditorScreen(
     var searchQuery by remember { mutableStateOf("") }
     var wordWrap by remember { mutableStateOf(true) }
     var showLineNumbers by remember { mutableStateOf(true) }
+    // Holds the pending bash command awaiting per-run user confirmation; null = no dialog.
+    var pendingBashConfirm by remember { mutableStateOf<String?>(null) }
+
+    val scope = rememberCoroutineScope()
+    val runSettings = remember { InferenceSettings() }
+
+    // Declared before runCode() below, which captures it — a local fun cannot
+    // reference a val declared further down the same block.
+    val language = remember(initialLanguage) {
+        CodeLanguage.entries.find { it.extension == initialLanguage } ?: CodeLanguage.JAVASCRIPT
+    }
+
+    // Executes [src] in the sandbox. BASH is only invoked here with confirmed=true,
+    // which is reached exclusively after the confirmation dialog below.
+    fun runCode(src: String, confirmed: Boolean) {
+        isRunning = true
+        scope.launch {
+            output = codeExecutor.execute(
+                code = src,
+                language = language,
+                settings = runSettings,
+                confirmed = confirmed
+            )
+            isRunning = false
+        }
+    }
 
     // Undo/redo stacks
     val undoStack = remember { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember { mutableStateListOf<TextFieldValue>() }
-
-    val language = remember(initialLanguage) {
-        CodeLanguage.entries.find { it.extension == initialLanguage } ?: CodeLanguage.JAVASCRIPT
-    }
 
     // Run button animation
     val runIconRotation by animateFloatAsState(
@@ -116,11 +139,18 @@ fun CodeEditorScreen(
                     }) { Icon(Icons.Default.ContentCopy, "Copy") }
 
                     // Run
-                    IconButton(onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        isRunning = true
-                        // Execution would be launched via coroutine in a real impl
-                    }) {
+                    IconButton(
+                        enabled = !isRunning,
+                        onClick = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            if (language == CodeLanguage.BASH) {
+                                // Shell runs require explicit confirmation on EVERY run.
+                                pendingBashConfirm = code.text
+                            } else {
+                                runCode(code.text, confirmed = false)
+                            }
+                        }
+                    ) {
                         Icon(
                             Icons.Default.PlayArrow,
                             "Run",
@@ -271,6 +301,51 @@ fun CodeEditorScreen(
                     CodeOutputPanel(output = result)
                 }
             }
+        }
+
+        // Bash run confirmation — shown on every shell run, displays the exact command.
+        pendingBashConfirm?.let { cmd ->
+            AlertDialog(
+                onDismissRequest = { pendingBashConfirm = null },
+                icon = { Icon(Icons.Default.Warning, contentDescription = null) },
+                title = { Text("Run shell command?") },
+                text = {
+                    Column {
+                        Text(
+                            "This will execute the following command in a device shell. " +
+                                "Only continue if you trust this code.",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        Spacer(Modifier.height(12.dp))
+                        Surface(
+                            color = Color(0xFF0D1117),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                text = cmd,
+                                style = TextStyle(
+                                    fontFamily = CodeFontFamily,
+                                    fontSize = 13.sp,
+                                    color = Color(0xFFC9D1D9)
+                                ),
+                                modifier = Modifier
+                                    .padding(10.dp)
+                                    .verticalScroll(rememberScrollState())
+                            )
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        pendingBashConfirm = null
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        runCode(cmd, confirmed = true)
+                    }) { Text("Run") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { pendingBashConfirm = null }) { Text("Cancel") }
+                }
+            )
         }
     }
 }

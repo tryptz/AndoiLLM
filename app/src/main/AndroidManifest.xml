@@ -33,11 +33,6 @@
             </intent-filter>
         </activity>
 
-        <service
-            android:name=".service.InferenceService"
-            android:foregroundServiceType="specialUse"
-            android:exported="false" />
-
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"

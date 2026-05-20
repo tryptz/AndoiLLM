@@ -7,6 +7,10 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.tryptz.neuron.data.local.entity.LocalModelEntity
+import com.tryptz.neuron.data.remote.HfFile
+import com.tryptz.neuron.data.remote.HfRepoSummary
+import com.tryptz.neuron.data.remote.HfSort
+import com.tryptz.neuron.data.remote.HuggingFaceClient
 import com.tryptz.neuron.data.repository.ModelRepository
 import com.tryptz.neuron.domain.model.*
 import com.tryptz.neuron.download.ModelDownloadWorker
@@ -16,9 +20,12 @@ import com.tryptz.neuron.util.GgufMetadataReader
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import timber.log.Timber
 import javax.inject.Inject
 
 data class ModelManagerUiState(
@@ -43,7 +50,16 @@ data class ModelManagerUiState(
     val importArchitecture: String? = null,
     val importQuantization: String? = null,
     val importParamCount: Long? = null,
-    val importError: String? = null
+    val importError: String? = null,
+    // ── HF browser ──
+    val hfQuery: String = "",
+    val hfSort: HfSort = HfSort.TRENDING,
+    val hfSearching: Boolean = false,
+    val hfResults: List<HfRepoSummary> = emptyList(),
+    val hfExpandedRepo: String? = null,
+    val hfRepoFiles: List<HfFile> = emptyList(),
+    val hfLoadingFiles: Boolean = false,
+    val hfError: String? = null
 )
 
 @HiltViewModel
@@ -51,7 +67,8 @@ class ModelManagerViewModel @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val modelRepo: ModelRepository,
     private val workManager: WorkManager,
-    private val deviceMonitor: DeviceMonitor
+    private val deviceMonitor: DeviceMonitor,
+    private val hfClient: HuggingFaceClient
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ModelManagerUiState())
@@ -82,11 +99,18 @@ class ModelManagerViewModel @Inject constructor(
 
     // ── Download (registry models) ──
 
+    /** Tracks the WorkInfo-collector Job per model so a re-download (or cancel)
+     *  cancels the prior collector instead of leaking one per call. */
+    private val downloadCollectors = mutableMapOf<String, Job>()
+
     fun downloadModel(modelId: String) {
         val request = ModelDownloadWorker.buildRequest(modelId)
         workManager.enqueue(request)
 
-        viewModelScope.launch {
+        // Cancel any collector left over from a previous download of this model.
+        downloadCollectors.remove(modelId)?.cancel()
+
+        downloadCollectors[modelId] = viewModelScope.launch {
             workManager.getWorkInfoByIdFlow(request.id).collect { info ->
                 if (info == null) return@collect
                 val downloaded = info.progress.getLong(ModelDownloadWorker.KEY_DOWNLOADED_BYTES, 0)
@@ -106,9 +130,11 @@ class ModelManagerViewModel @Inject constructor(
                     }
                     WorkInfo.State.SUCCEEDED -> {
                         _uiState.update { it.copy(downloads = it.downloads - modelId) }
+                        downloadCollectors.remove(modelId)?.cancel()
                     }
                     WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
                         _uiState.update { it.copy(downloads = it.downloads - modelId) }
+                        downloadCollectors.remove(modelId)?.cancel()
                     }
                     else -> {}
                 }
@@ -118,6 +144,7 @@ class ModelManagerViewModel @Inject constructor(
 
     fun cancelDownload(modelId: String) {
         workManager.cancelAllWorkByTag("model_download_$modelId")
+        downloadCollectors.remove(modelId)?.cancel()
         _uiState.update { it.copy(downloads = it.downloads - modelId) }
     }
 
@@ -228,6 +255,106 @@ class ModelManagerViewModel @Inject constructor(
         viewModelScope.launch {
             modelRepo.deleteLocalModel(id)
             _uiState.update { it.copy(deleteConfirmLocalId = null) }
+        }
+    }
+
+    // ── HF browser ──
+
+    private var searchJob: Job? = null
+
+    init {
+        // Kick off an initial Trending fetch so the Discover section isn't empty.
+        viewModelScope.launch { runHfSearch() }
+    }
+
+    fun setHfQuery(q: String) {
+        _uiState.update { it.copy(hfQuery = q) }
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
+            delay(350) // debounce typing
+            runHfSearch()
+        }
+    }
+
+    fun setHfSort(sort: HfSort) {
+        _uiState.update { it.copy(hfSort = sort) }
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch { runHfSearch() }
+    }
+
+    private suspend fun runHfSearch() {
+        val state = _uiState.value
+        _uiState.update { it.copy(hfSearching = true, hfError = null) }
+        try {
+            val results = hfClient.search(state.hfQuery, state.hfSort)
+            _uiState.update { it.copy(hfSearching = false, hfResults = results) }
+            Timber.i("[op=hf_search_ok] count=${results.size} sort=${state.hfSort.apiKey}")
+        } catch (e: Exception) {
+            Timber.e(e, "[op=hf_search_fail] q=${state.hfQuery}")
+            _uiState.update { it.copy(hfSearching = false, hfError = e.message ?: "Search failed") }
+        }
+    }
+
+    fun toggleHfRepo(repoId: String) {
+        val currentlyExpanded = _uiState.value.hfExpandedRepo == repoId
+        if (currentlyExpanded) {
+            _uiState.update { it.copy(hfExpandedRepo = null, hfRepoFiles = emptyList()) }
+            return
+        }
+        _uiState.update { it.copy(hfExpandedRepo = repoId, hfLoadingFiles = true, hfRepoFiles = emptyList()) }
+        viewModelScope.launch {
+            try {
+                val files = hfClient.listGgufFiles(repoId)
+                _uiState.update { it.copy(hfLoadingFiles = false, hfRepoFiles = files) }
+                Timber.i("[op=hf_files_ok] repo=$repoId count=${files.size}")
+            } catch (e: Exception) {
+                Timber.e(e, "[op=hf_files_fail] repo=$repoId")
+                _uiState.update { it.copy(hfLoadingFiles = false, hfError = e.message ?: "Listing failed") }
+            }
+        }
+    }
+
+    /** Kick off a download for a specific .gguf file inside an HF repo. Uses the
+     *  same WorkManager pipeline as catalog downloads — the worker's URL override
+     *  branch handles the registration-as-local-model after completion. */
+    fun downloadHfFile(repoId: String, file: HfFile) {
+        val syntheticId = "hf:${repoId.replace('/', '_')}:${file.path}"
+        val url = "https://huggingface.co/$repoId/resolve/main/${file.path}"
+        val filename = file.path.substringAfterLast('/')
+        val displayName = "${repoId.substringAfterLast('/')} / $filename"
+        Timber.i("[op=hf_download_enqueue] id=$syntheticId repo=$repoId file=${file.path} url=$url")
+
+        val request = ModelDownloadWorker.buildRequest(
+            modelId = syntheticId,
+            url = url,
+            filename = filename,
+            displayName = displayName,
+            sourceRepo = repoId
+        )
+        workManager.enqueue(request)
+        downloadCollectors.remove(syntheticId)?.cancel()
+        downloadCollectors[syntheticId] = viewModelScope.launch {
+            workManager.getWorkInfoByIdFlow(request.id).collect { info ->
+                if (info == null) return@collect
+                val downloaded = info.progress.getLong(ModelDownloadWorker.KEY_DOWNLOADED_BYTES, 0)
+                val total = info.progress.getLong(ModelDownloadWorker.KEY_TOTAL_BYTES, 0)
+                val speed = info.progress.getLong(ModelDownloadWorker.KEY_SPEED_BPS, 0)
+                when (info.state) {
+                    WorkInfo.State.RUNNING -> _uiState.update { s ->
+                        s.copy(downloads = s.downloads + (syntheticId to DownloadProgress(
+                            modelId = syntheticId,
+                            bytesDownloaded = downloaded,
+                            totalBytes = total,
+                            speedBytesPerSec = speed
+                        )))
+                    }
+                    WorkInfo.State.SUCCEEDED, WorkInfo.State.FAILED, WorkInfo.State.CANCELLED -> {
+                        _uiState.update { it.copy(downloads = it.downloads - syntheticId) }
+                        downloadCollectors.remove(syntheticId)?.cancel()
+                    }
+                    else -> {}
+                }
+            }
         }
     }
 }
