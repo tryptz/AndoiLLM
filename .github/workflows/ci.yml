@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 jobs:
   lint:
@@ -31,16 +32,16 @@ jobs:
           distribution: temurin
           java-version: 17
 
-      - name: Set up NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r27c
+      # Must match ndkVersion / externalNativeBuild.cmake.version in
+      # app/build.gradle.kts, otherwise AGP fails to resolve the NDK.
+      - name: Install NDK and CMake
+        run: echo y | sdkmanager "ndk;29.0.14206865" "cmake;3.22.1"
 
       - name: Clone native dependencies
         run: |
           cd app/src/main/jni
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git llama_cpp
-          git clone --depth 1 https://github.com/nicbarker/quickjs.git quickjs
+          git clone --depth 1 https://github.com/bellard/quickjs.git quickjs
 
       - uses: gradle/actions/setup-gradle@v4
       - name: Build debug APK
