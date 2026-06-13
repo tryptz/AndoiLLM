@@ -9,6 +9,7 @@ import com.tryptz.neuron.data.local.entity.LocalModelEntity
 import com.tryptz.neuron.data.model.ModelRegistry
 import com.tryptz.neuron.domain.model.*
 import com.tryptz.neuron.util.DeviceMonitor
+import com.tryptz.neuron.util.GgufMetadataReader
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -161,17 +162,24 @@ class ModelRepositoryImpl @Inject constructor(
         sourceRepo: String?
     ): LocalModelEntity = withContext(Dispatchers.IO) {
         val file = File(filePath)
+        // Same auto-detection as the import flow: without it, every HF download
+        // was registered as ChatML/4096-ctx regardless of the actual model.
+        val metadata = GgufMetadataReader.read(file)
+        // Re-downloading the same file must update the existing row, not add a
+        // duplicate library entry pointing at the same path.
+        val existingId = localModelDao.getByFilePath(filePath)?.id
         val entity = LocalModelEntity(
-            id = UUID.randomUUID().toString(),
-            name = displayName.ifBlank { file.nameWithoutExtension },
+            id = existingId ?: UUID.randomUUID().toString(),
+            name = displayName.ifBlank { metadata?.name ?: file.nameWithoutExtension },
             fileName = file.name,
             filePath = filePath,
             fileSizeBytes = file.length(),
-            chatTemplate = ChatTemplate.CHATML.raw,
-            contextLength = 4096,
-            architecture = sourceRepo,
-            quantization = null,
-            parameterCount = null,
+            chatTemplate = (metadata?.inferredChatTemplate ?: ChatTemplate.CHATML).raw,
+            contextLength = metadata?.contextLength ?: 4096,
+            architecture = metadata?.architecture,
+            quantization = metadata?.quantization?.label
+                ?: GgufMetadataReader.quantLabelFromFileName(file.name),
+            parameterCount = metadata?.parameterCount,
             installedAt = System.currentTimeMillis()
         )
         localModelDao.insert(entity)

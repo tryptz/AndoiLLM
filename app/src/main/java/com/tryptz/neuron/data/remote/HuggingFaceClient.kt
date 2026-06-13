@@ -39,17 +39,42 @@ class HuggingFaceClient @Inject constructor(
             .getOrDefault(emptyList())
     }
 
-    /** List .gguf files in a repo, sorted ascending by file size. */
+    /**
+     * List .gguf files in a repo, sorted ascending by file size.
+     *
+     * Recurses into subfolders (quant repos like unsloth/* nest files per-quant)
+     * and drops files the app can't run standalone: mmproj vision projectors
+     * and multi-part split shards — downloading one shard of N is unloadable.
+     */
     suspend fun listGgufFiles(repo: String): List<HfFile> {
-        val url = "https://huggingface.co/api/models/$repo/tree/main"
+        val url = "https://huggingface.co/api/models/$repo/tree/main?recursive=true"
         Timber.i("[op=hf_list_files] repo=$repo")
         val body = http.get(url).bodyAsText()
         val all = runCatching { json.decodeFromString<List<HfFile>>(body) }
             .onFailure { Timber.e(it, "[op=hf_list_files_parse_fail] repo=$repo") }
             .getOrDefault(emptyList())
-        return all.filter { it.type == "file" && it.path.endsWith(".gguf") }
+        return all.filter { it.type == "file" && isStandaloneGgufModel(it.path) }
             .sortedBy { it.size ?: Long.MAX_VALUE }
     }
+
+    /** Direct-download URL for a repo file, percent-encoding each path segment
+     *  (HF file names can contain spaces, '+', '#', etc.). */
+    fun downloadUrl(repo: String, path: String): String {
+        val encoded = path.split('/').joinToString("/") {
+            URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+        }
+        return "https://huggingface.co/$repo/resolve/main/$encoded"
+    }
+}
+
+private val SPLIT_SHARD_REGEX = Regex("""-\d{5}-of-\d{5}\.gguf$""", RegexOption.IGNORE_CASE)
+
+/** True if [path] is a .gguf the app can download and load on its own. */
+internal fun isStandaloneGgufModel(path: String): Boolean {
+    val name = path.substringAfterLast('/')
+    return name.endsWith(".gguf", ignoreCase = true) &&
+        !name.contains("mmproj", ignoreCase = true) &&
+        !SPLIT_SHARD_REGEX.containsMatchIn(name)
 }
 
 @Serializable

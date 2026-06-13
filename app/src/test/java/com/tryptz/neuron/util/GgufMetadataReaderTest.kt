@@ -89,4 +89,18 @@ class GgufMetadataReaderTest {
         assertNull(meta.parameterCount)
         assertNull(meta.chatTemplate)
     }
+
+    @Test
+    fun `quantLabelFromFileName detects common quant suffixes`() {
+        assertEquals("Q4_K_M", GgufMetadataReader.quantLabelFromFileName("Llama-3.2-3B-Instruct-Q4_K_M.gguf"))
+        assertEquals("Q8_0", GgufMetadataReader.quantLabelFromFileName("gemma-3-4b-it-q8_0.gguf"))
+        assertEquals("Q6_K", GgufMetadataReader.quantLabelFromFileName("model-Q6_K.gguf"))
+        assertEquals("IQ4_XS", GgufMetadataReader.quantLabelFromFileName("model-IQ4_XS.gguf"))
+        assertEquals("F16", GgufMetadataReader.quantLabelFromFileName("mistral-7b-f16.gguf"))
+    }
+
+    @Test
+    fun `quantLabelFromFileName returns null when no quant in name`() {
+        assertNull(GgufMetadataReader.quantLabelFromFileName("my-model.gguf"))
+    }
 }

@@ -12,6 +12,9 @@ interface LocalModelDao {
     @Query("SELECT * FROM local_models WHERE id = :id")
     suspend fun getById(id: String): LocalModelEntity?
 
+    @Query("SELECT * FROM local_models WHERE filePath = :filePath LIMIT 1")
+    suspend fun getByFilePath(filePath: String): LocalModelEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(model: LocalModelEntity)
 

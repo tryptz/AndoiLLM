@@ -305,11 +305,19 @@ class ModelManagerViewModel @Inject constructor(
         viewModelScope.launch {
             try {
                 val files = hfClient.listGgufFiles(repoId)
-                _uiState.update { it.copy(hfLoadingFiles = false, hfRepoFiles = files) }
                 Timber.i("[op=hf_files_ok] repo=$repoId count=${files.size}")
+                // Expanding repo B while repo A's fetch is in flight must not let
+                // A's late result land under B — only apply if still expanded.
+                _uiState.update {
+                    if (it.hfExpandedRepo == repoId) it.copy(hfLoadingFiles = false, hfRepoFiles = files) else it
+                }
             } catch (e: Exception) {
                 Timber.e(e, "[op=hf_files_fail] repo=$repoId")
-                _uiState.update { it.copy(hfLoadingFiles = false, hfError = e.message ?: "Listing failed") }
+                _uiState.update {
+                    if (it.hfExpandedRepo == repoId) {
+                        it.copy(hfLoadingFiles = false, hfError = e.message ?: "Listing failed")
+                    } else it
+                }
             }
         }
     }
@@ -319,7 +327,7 @@ class ModelManagerViewModel @Inject constructor(
      *  branch handles the registration-as-local-model after completion. */
     fun downloadHfFile(repoId: String, file: HfFile) {
         val syntheticId = "hf:${repoId.replace('/', '_')}:${file.path}"
-        val url = "https://huggingface.co/$repoId/resolve/main/${file.path}"
+        val url = hfClient.downloadUrl(repoId, file.path)
         val filename = file.path.substringAfterLast('/')
         val displayName = "${repoId.substringAfterLast('/')} / $filename"
         Timber.i("[op=hf_download_enqueue] id=$syntheticId repo=$repoId file=${file.path} url=$url")

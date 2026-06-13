@@ -159,7 +159,8 @@ fun ModelManagerScreen(
                     onQueryChange = viewModel::setHfQuery,
                     onSortChange = viewModel::setHfSort,
                     onToggleRepo = viewModel::toggleHfRepo,
-                    onDownloadFile = viewModel::downloadHfFile
+                    onDownloadFile = viewModel::downloadHfFile,
+                    onCancelDownload = viewModel::cancelDownload
                 )
             }
 
@@ -675,7 +676,8 @@ private fun DiscoverSection(
     onQueryChange: (String) -> Unit,
     onSortChange: (HfSort) -> Unit,
     onToggleRepo: (String) -> Unit,
-    onDownloadFile: (String, HfFile) -> Unit
+    onDownloadFile: (String, HfFile) -> Unit,
+    onCancelDownload: (String) -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -727,7 +729,7 @@ private fun DiscoverSection(
             if (state.hfResults.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 state.hfResults.take(20).forEach { repo ->
-                    HfRepoCard(repo, state, onToggleRepo, onDownloadFile)
+                    HfRepoCard(repo, state, onToggleRepo, onDownloadFile, onCancelDownload)
                     Spacer(Modifier.height(8.dp))
                 }
             } else if (!state.hfSearching) {
@@ -747,7 +749,8 @@ private fun HfRepoCard(
     repo: HfRepoSummary,
     state: ModelManagerUiState,
     onToggleRepo: (String) -> Unit,
-    onDownloadFile: (String, HfFile) -> Unit
+    onDownloadFile: (String, HfFile) -> Unit,
+    onCancelDownload: (String) -> Unit
 ) {
     val expanded = state.hfExpandedRepo == repo.id
     OutlinedCard(
@@ -799,7 +802,7 @@ private fun HfRepoCard(
                                 )
                                 file.size?.let {
                                     Text(
-                                        formatBytes(it),
+                                        it.formatBytes(),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -809,6 +812,9 @@ private fun HfRepoCard(
                                 val pct = if (prog.totalBytes > 0)
                                     (prog.bytesDownloaded * 100 / prog.totalBytes).toInt() else 0
                                 Text("$pct%", style = MaterialTheme.typography.labelMedium)
+                                IconButton(onClick = { onCancelDownload(syntheticId) }) {
+                                    Icon(Icons.Default.Close, contentDescription = "Cancel download", modifier = Modifier.size(16.dp))
+                                }
                             } else {
                                 FilledTonalButton(onClick = { onDownloadFile(repo.id, file) }) {
                                     Icon(Icons.Default.Download, null, modifier = Modifier.size(16.dp))

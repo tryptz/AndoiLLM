@@ -48,6 +48,22 @@ object GgufMetadataReader {
         }
     }
 
+    /** Reads metadata from a GGUF file already on app-private storage
+     *  (e.g. just downloaded by ModelDownloadWorker). */
+    fun read(file: java.io.File): GgufMetadata? {
+        return try {
+            file.inputStream().buffered().use { stream -> parseHeader(stream) }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /** Fallback quant detection from the file name (e.g. "...-Q4_K_M.gguf")
+     *  for the many file_type codes [mapFileTypeToQuantization] doesn't cover. */
+    fun quantLabelFromFileName(fileName: String): String? =
+        Regex("""(?i)(IQ\d+_[A-Z0-9_]+|Q\d+_K_[SML]|Q\d+_K|Q\d+_\d|BF16|F16|F32)""")
+            .find(fileName)?.value?.uppercase()
+
     private fun parseHeader(stream: InputStream): GgufMetadata? {
         val buf = ByteBuffer.wrap(readBytes(stream, 4 + 4 + 8 + 8) ?: return null)
         buf.order(ByteOrder.LITTLE_ENDIAN)
