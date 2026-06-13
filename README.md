@@ -136,9 +136,9 @@ cd app/src/main/jni
 # Clone llama.cpp
 git clone --depth 1 https://github.com/ggml-org/llama.cpp.git llama_cpp
 
-# Clone QuickJS
-git clone --depth 1 https://github.com/nicbarker/quickjs.git quickjs
-# Or use bellard's: https://bellard.org/quickjs/
+# Clone QuickJS (official Bellard repo — the CMake build expects its
+# post-2024 layout: dtoa.c instead of libbf.c)
+git clone --depth 1 https://github.com/bellard/quickjs.git quickjs
 ```
 
 ### Build
