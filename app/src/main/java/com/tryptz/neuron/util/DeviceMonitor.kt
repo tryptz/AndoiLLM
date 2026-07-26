@@ -8,9 +8,11 @@ import android.os.BatteryManager
 import com.tryptz.neuron.domain.model.DeviceTelemetry
 import com.tryptz.neuron.inference.backend.ThermalManager
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOn
 import java.io.File
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -21,12 +23,15 @@ class DeviceMonitor @Inject constructor(
 ) {
     private val am = context.getSystemService(Context.ACTIVITY_SERVICE) as ActivityManager
 
+    // flowOn(IO) is load-bearing: snapshot() does sysfs/File reads and a sticky
+    // broadcast query; collected from viewModelScope it would otherwise run on
+    // the main thread every 2s.
     fun observeTelemetry(intervalMs: Long = 2000): Flow<DeviceTelemetry> = flow {
         while (true) {
             emit(snapshot())
             delay(intervalMs)
         }
-    }
+    }.flowOn(Dispatchers.IO)
 
     fun snapshot(): DeviceTelemetry {
         val memInfo = ActivityManager.MemoryInfo()

@@ -36,7 +36,11 @@ fun BasicSettings(
             onValueChange = { v -> onUpdate { it.copy(contextLength = v.toInt()) } }
         )
 
-        var prompt by remember(settings.systemPrompt) { mutableStateOf(settings.systemPrompt) }
+        // NOT keyed on settings.systemPrompt: every keystroke persists to
+        // DataStore, which re-emits settings, which would change the remember
+        // key and reset this state to the lagging persisted value — dropping
+        // characters and jumping the cursor while typing fast.
+        var prompt by remember { mutableStateOf(settings.systemPrompt) }
         OutlinedTextField(
             value = prompt,
             onValueChange = { prompt = it; onUpdate { s -> s.copy(systemPrompt = it) } },

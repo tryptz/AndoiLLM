@@ -3,7 +3,6 @@
 #include <string>
 #include <chrono>
 #include <atomic>
-#include <thread>
 
 #define TAG "NeuronQuickJS"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -20,12 +19,50 @@ struct RuntimeContext {
     JSContext* ctx = nullptr;
 #endif
     std::atomic<bool> interrupted{false};
+    // Deadline checked from the interrupt handler; avoids a timer thread that
+    // could outlive this struct and write to freed memory.
+    std::atomic<long long> deadline_ms{0}; // steady_clock ms since epoch, 0 = none
 };
+
+static long long steady_now_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+// Escape a string for safe embedding inside a JSON string literal.
+static std::string json_escape(const std::string& in) {
+    std::string out;
+    out.reserve(in.size() + 8);
+    for (unsigned char c : in) {
+        switch (c) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    char buf[8];
+                    snprintf(buf, sizeof(buf), "\\u%04x", c);
+                    out += buf;
+                } else {
+                    out += (char)c;
+                }
+        }
+    }
+    return out;
+}
 
 #if QUICKJS_AVAILABLE
 static int interrupt_handler(JSRuntime* rt, void* opaque) {
     auto* rc = static_cast<RuntimeContext*>(opaque);
-    return rc->interrupted.load() ? 1 : 0;
+    if (rc->interrupted.load()) return 1;
+    long long deadline = rc->deadline_ms.load();
+    if (deadline != 0 && steady_now_ms() >= deadline) {
+        rc->interrupted.store(true);
+        return 1;
+    }
+    return 0;
 }
 #endif
 
@@ -91,18 +128,13 @@ Java_com_tryptz_neuron_code_engine_QuickJSBridge_evaluate(
 
     const char* codeStr = env->GetStringUTFChars(code, nullptr);
     rc->interrupted.store(false);
+    rc->deadline_ms.store(timeoutMs > 0 ? steady_now_ms() + timeoutMs : 0);
 
     auto t_start = std::chrono::high_resolution_clock::now();
 
-    // Set up a timeout thread
-    std::thread timeout_thread([rc, timeoutMs]() {
-        std::this_thread::sleep_for(std::chrono::milliseconds(timeoutMs));
-        rc->interrupted.store(true);
-    });
-    timeout_thread.detach();
-
     JSValue result = JS_Eval(rc->ctx, codeStr, strlen(codeStr), "<input>", JS_EVAL_TYPE_GLOBAL);
     env->ReleaseStringUTFChars(code, codeStr);
+    rc->deadline_ms.store(0);
 
     auto t_end = std::chrono::high_resolution_clock::now();
     long elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(t_end - t_start).count();
@@ -121,11 +153,15 @@ Java_com_tryptz_neuron_code_engine_QuickJSBridge_evaluate(
         JS_FreeValue(rc->ctx, exc);
 
         std::string error_type = rc->interrupted.load() ? "TIMEOUT" : "RUNTIME";
+        if (rc->interrupted.load()) {
+            err_msg = "Execution timed out after " + std::to_string(timeoutMs) + "ms";
+        }
+        const std::string esc = json_escape(err_msg);
 
-        json_result = "{\"stdout\":\"\",\"stderr\":\"" + err_msg + "\","
+        json_result = "{\"stdout\":\"\",\"stderr\":\"" + esc + "\","
                       "\"executionTimeMs\":" + std::to_string(elapsed_ms) + ","
                       "\"memoryUsedBytes\":" + std::to_string(mem_usage.malloc_size) + ","
-                      "\"error\":{\"type\":\"" + error_type + "\",\"message\":\"" + err_msg + "\"}}";
+                      "\"error\":{\"type\":\"" + error_type + "\",\"message\":\"" + esc + "\"}}";
     } else {
         const char* result_str = JS_ToCString(rc->ctx, result);
         std::string result_text = result_str ? result_str : "";
@@ -146,7 +182,7 @@ Java_com_tryptz_neuron_code_engine_QuickJSBridge_evaluate(
                 json_result = result_text;
             }
         } else {
-            json_result = "{\"stdout\":\"\",\"returnValue\":\"" + result_text + "\","
+            json_result = "{\"stdout\":\"\",\"returnValue\":\"" + json_escape(result_text) + "\","
                           "\"executionTimeMs\":" + std::to_string(elapsed_ms) + ","
                           "\"memoryUsedBytes\":" + std::to_string(mem_usage.malloc_size) + "}";
         }

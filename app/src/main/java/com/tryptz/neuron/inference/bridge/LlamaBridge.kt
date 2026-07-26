@@ -52,6 +52,9 @@ object LlamaBridge {
     external fun getNextToken(completionHandle: Long): String? // null = EOS
     external fun cancelCompletion(completionHandle: Long)
 
+    /** Frees the native completion context. Must be called exactly once per startCompletion. */
+    external fun freeCompletion(completionHandle: Long)
+
     // ── Tokenizer ──
     external fun tokenize(handle: Long, text: String): IntArray
     external fun detokenize(handle: Long, tokens: IntArray): String

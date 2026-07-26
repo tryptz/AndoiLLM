@@ -81,19 +81,25 @@ class InferenceEngineImpl @Inject constructor() : InferenceEngine {
                     Timber.i("[op=battery_saver_active] forcing backend=CPU")
                 }
 
+                // NPU (QNN) isn't wired into this llama.cpp build — inference
+                // would run on CPU regardless, so record the backend truthfully
+                // instead of telling the UI it's on the NPU.
+                val effectiveBackend =
+                    if (backend == InferenceBackend.NPU) InferenceBackend.CPU else backend
+
                 val handle = LlamaBridge.loadModel(
                     modelPath = modelPath,
                     contextLength = settings.contextLength.coerceAtMost(descriptor.maxContext),
                     batchSize = settings.batchSize,
                     threadCount = if (settings.threadCount == 0) BackendResolver.resolveThreadCount() else settings.threadCount,
-                    gpuLayers = if (backend == InferenceBackend.GPU) GPU_LAYERS_ALL else GPU_LAYERS_NONE,
-                    useVulkan = backend == InferenceBackend.GPU,
+                    gpuLayers = if (effectiveBackend == InferenceBackend.GPU) GPU_LAYERS_ALL else GPU_LAYERS_NONE,
+                    useVulkan = effectiveBackend == InferenceBackend.GPU,
                     kvCacheTypeQuant = kvCacheTypeFor(settings.kvCacheQuant)
                 )
 
                 require(handle != 0L) { "Failed to load model: ${descriptor.name}" }
-                currentModel = ModelHandle(handle, descriptor, backend)
-                Timber.i("Model loaded: ${descriptor.name} on $backend")
+                currentModel = ModelHandle(handle, descriptor, effectiveBackend)
+                Timber.i("Model loaded: ${descriptor.name} on $effectiveBackend")
             }
         }
     }
@@ -102,8 +108,19 @@ class InferenceEngineImpl @Inject constructor() : InferenceEngine {
         messages: List<ChatMessage>,
         settings: InferenceSettings
     ): Flow<InferenceEvent> = flow {
+        // Hold modelLock for the whole stream: unloadModel/loadModel must not
+        // free the native context while getNextToken is inside llama_decode.
+        // cancelGeneration() doesn't take the lock, so a cancel still unblocks
+        // the loop promptly and releases the lock via the flow's completion.
+        modelLock.withLock { generateLocked(messages, settings) }
+    }.flowOn(Dispatchers.IO)
+
+    private suspend fun FlowCollector<InferenceEvent>.generateLocked(
+        messages: List<ChatMessage>,
+        settings: InferenceSettings
+    ) {
         val model = currentModel ?: run {
-            emit(InferenceEvent.Error("No model loaded")); return@flow
+            emit(InferenceEvent.Error("No model loaded")); return
         }
 
         val prompt = PromptFormatter.format(messages, model.descriptor, settings)
@@ -117,6 +134,12 @@ class InferenceEngineImpl @Inject constructor() : InferenceEngine {
             repeatPenalty = settings.repeatPenalty,
             maxTokens = settings.contextLength
         )
+        // 0 means the native side failed (tokenization/decode error, prompt too
+        // long for the context…) — surface it instead of streaming nothing.
+        if (completionHandle == NO_COMPLETION) {
+            emit(InferenceEvent.Error("Failed to start generation (prompt may exceed the context window)"))
+            return
+        }
         activeCompletionHandle = completionHandle
 
         try {
@@ -124,26 +147,33 @@ class InferenceEngineImpl @Inject constructor() : InferenceEngine {
             while (currentCoroutineContext().isActive) {
                 val token = LlamaBridge.getNextToken(completionHandle) ?: break
 
+                var thinkingHandled = false
                 if (model.descriptor.capabilities.reasoning) {
                     when {
-                        token.contains("<think>") -> { inThinking = true; continue }
-                        token.contains("</think>") -> { inThinking = false; continue }
-                        inThinking -> { emit(InferenceEvent.ThinkingToken(token)); continue }
+                        token.contains("<think>") -> { inThinking = true; thinkingHandled = true }
+                        token.contains("</think>") -> { inThinking = false; thinkingHandled = true }
+                        inThinking -> { emit(InferenceEvent.ThinkingToken(token)); thinkingHandled = true }
                     }
                 }
 
                 val tokSec = LlamaBridge.getLastTokensPerSec()
-                emit(InferenceEvent.Token(token, tokSec))
+                if (!thinkingHandled) {
+                    emit(InferenceEvent.Token(token, tokSec))
+                }
 
-                val cpuTemp = LlamaBridge.getCpuTemperature()
+                // Telemetry + throttling run for EVERY token, including the
+                // thinking phase — that's often the most compute-intense stretch.
+                // Sub-zero temps mean the sensor is unreadable, not cold silicon.
+                val cpuTemp = LlamaBridge.getCpuTemperature().takeIf { it > 0f }
                 _telemetry.value = _telemetry.value.copy(
                     currentTokSec = tokSec,
                     ramUsedMb = LlamaBridge.getModelRamUsageMb(model.nativeHandle),
                     cpuTempCelsius = cpuTemp,
-                    thermalState = ThermalManager.classify(cpuTemp)
+                    thermalState = cpuTemp?.let { ThermalManager.classify(it) }
+                        ?: _telemetry.value.thermalState
                 )
 
-                ThermalManager.applyThrottling(settings.thermalPolicy, cpuTemp)
+                cpuTemp?.let { ThermalManager.applyThrottling(settings.thermalPolicy, it) }
                 // Battery saver clamps to 20 tok/s if user hasn't set a tighter cap.
                 val effectiveCap = when {
                     settings.batterySaver && (settings.maxTokSecCap == 0 || settings.maxTokSecCap > 20) -> 20
@@ -161,8 +191,9 @@ class InferenceEngineImpl @Inject constructor() : InferenceEngine {
             emit(InferenceEvent.Error(e.message ?: "Inference error"))
         } finally {
             activeCompletionHandle = NO_COMPLETION
+            LlamaBridge.freeCompletion(completionHandle)
         }
-    }.flowOn(Dispatchers.IO)
+    }
 
     override fun cancelGeneration() {
         // Snapshot the volatile once so the check and the call see the same handle.

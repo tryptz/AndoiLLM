@@ -48,6 +48,15 @@ object GgufMetadataReader {
         }
     }
 
+    /** Reads metadata straight from a file on disk (e.g. a completed download). */
+    fun read(file: java.io.File): GgufMetadata? {
+        return try {
+            file.inputStream().buffered().use { stream -> parseHeader(stream) }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
     private fun parseHeader(stream: InputStream): GgufMetadata? {
         val buf = ByteBuffer.wrap(readBytes(stream, 4 + 4 + 8 + 8) ?: return null)
         buf.order(ByteOrder.LITTLE_ENDIAN)
@@ -164,8 +173,18 @@ object GgufMetadataReader {
             9 -> {         // ARRAY
                 val arrType = readU32(stream) ?: return null
                 val arrLen = readU64(stream) ?: return null
-                for (j in 0 until arrLen.coerceAtMost(65536)) {
-                    skipValue(stream, arrType) ?: return null
+                // Must skip EVERY element: modern vocabularies exceed 128k
+                // entries (Llama-3: 128,256; Qwen: ~152k) — capping the skip
+                // leaves the stream mid-array and every later key (notably
+                // tokenizer.chat_template) is read as garbage.
+                if (arrLen < 0 || arrLen > 100_000_000L) return null // corrupt header
+                val elemSize = fixedSizeOf(arrType)
+                if (elemSize != null) {
+                    skipFully(stream, arrLen * elemSize) ?: return null
+                } else {
+                    for (j in 0 until arrLen) {
+                        skipValue(stream, arrType) ?: return null
+                    }
                 }
                 return true
             }
@@ -173,7 +192,32 @@ object GgufMetadataReader {
             12 -> 8L       // FLOAT64
             else -> return null
         }
-        readBytes(stream, bytesToSkip.toInt()) ?: return null
+        skipFully(stream, bytesToSkip) ?: return null
+        return true
+    }
+
+    /** Byte width of a fixed-size GGUF value type, or null for string/array. */
+    private fun fixedSizeOf(valueType: Int): Long? = when (valueType) {
+        0, 1, 7 -> 1L
+        2, 3 -> 2L
+        4, 5, 6 -> 4L
+        10, 11, 12 -> 8L
+        else -> null
+    }
+
+    /** Skips exactly [count] bytes without allocating; null on premature EOF. */
+    private fun skipFully(stream: InputStream, count: Long): Boolean? {
+        var remaining = count
+        while (remaining > 0) {
+            val skipped = stream.skip(remaining)
+            if (skipped > 0) {
+                remaining -= skipped
+            } else {
+                // skip() may return 0 on some streams — force progress with a read.
+                if (stream.read() < 0) return null
+                remaining--
+            }
+        }
         return true
     }
 
@@ -200,11 +244,13 @@ object GgufMetadataReader {
     }
 
     private fun estimateParams(blockCount: Int, architecture: String?): Long {
-        // Rough estimates based on typical architectures
+        // Rough estimates: params-per-transformer-block for a 7B-class model
+        // of each family (7B / typical block count). Coarse, but the right
+        // order of magnitude — the old 200M numerator was ~35x too low.
         val paramsPerBlock = when (architecture) {
-            "llama" -> 200_000_000L / 32  // ~6.25M per block for 7B-class
-            "gemma", "gemma2" -> 200_000_000L / 28
-            else -> 200_000_000L / 32
+            "llama" -> 7_000_000_000L / 32   // ~218M per block
+            "gemma", "gemma2" -> 7_000_000_000L / 28
+            else -> 7_000_000_000L / 32
         }
         return blockCount * paramsPerBlock
     }

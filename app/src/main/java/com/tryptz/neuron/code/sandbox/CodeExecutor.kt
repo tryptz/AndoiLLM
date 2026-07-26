@@ -174,29 +174,60 @@ class CodeExecutorImpl @Inject constructor() : CodeExecutor {
                 .redirectErrorStream(false)
                 .start()
 
+            // Drain stdout/stderr WHILE waiting: a child that writes more than
+            // the ~64KB pipe buffer blocks forever if we only read after
+            // waitFor, turning every chatty command into a bogus timeout.
+            val stdoutBuf = StringBuilder()
+            val stderrBuf = StringBuilder()
+            val outDrainer = drainAsync(process.inputStream, stdoutBuf)
+            val errDrainer = drainAsync(process.errorStream, stderrBuf)
+
             val completed = process.waitFor(settings.codeTimeoutSec.toLong(), java.util.concurrent.TimeUnit.SECONDS)
 
             if (!completed) {
                 process.destroyForcibly()
+                outDrainer.join(1000)
+                errDrainer.join(1000)
                 return CodeOutput(
+                    stdout = stdoutBuf.toString(),
+                    stderr = stderrBuf.toString(),
                     error = CodeError(ErrorType.TIMEOUT, "Execution timed out after ${settings.codeTimeoutSec}s")
                 )
             }
 
-            val stdout = process.inputStream.bufferedReader().readText()
-                .take(1024 * 1024) // 1MB output cap
-            val stderr = process.errorStream.bufferedReader().readText()
-                .take(1024 * 1024)
+            outDrainer.join(5000)
+            errDrainer.join(5000)
 
             CodeOutput(
-                stdout = stdout,
-                stderr = stderr,
+                stdout = stdoutBuf.toString(),
+                stderr = stderrBuf.toString(),
                 returnValue = if (process.exitValue() == 0) null else "exit code: ${process.exitValue()}"
             )
         } catch (e: Exception) {
             CodeOutput(error = CodeError(ErrorType.RUNTIME, e.message ?: "Shell execution failed"))
         }
     }
+
+    /** Reads [stream] to exhaustion on a daemon thread, keeping at most [MAX_OUTPUT_CHARS] chars. */
+    private fun drainAsync(stream: java.io.InputStream, into: StringBuilder): Thread =
+        Thread {
+            try {
+                stream.bufferedReader().use { reader ->
+                    val buf = CharArray(8192)
+                    while (true) {
+                        val n = reader.read(buf)
+                        if (n == -1) break
+                        synchronized(into) {
+                            val room = MAX_OUTPUT_CHARS - into.length
+                            if (room > 0) into.append(buf, 0, minOf(n, room))
+                        }
+                        // Keep consuming past the cap so the child never blocks on a full pipe.
+                    }
+                }
+            } catch (_: Exception) {
+                // Stream closed by destroyForcibly — nothing to do.
+            }
+        }.apply { isDaemon = true; start() }
 
     /**
      * Heuristic language detection. Deliberately NEVER returns [CodeLanguage.BASH]:
@@ -206,11 +237,24 @@ class CodeExecutorImpl @Inject constructor() : CodeExecutor {
     override fun detectLanguage(code: String): CodeLanguage {
         val trimmed = code.trim()
         return when {
-            trimmed.startsWith("<!DOCTYPE") || trimmed.startsWith("<html") -> CodeLanguage.HTML
-            trimmed.contains("def ") || trimmed.contains("import ") && !trimmed.contains("require(") -> CodeLanguage.PYTHON
+            trimmed.startsWith("<!doctype", ignoreCase = true) ||
+                trimmed.startsWith("<html", ignoreCase = true) -> CodeLanguage.HTML
+            // JS indicators FIRST: ES-module `import` / code containing "def"
+            // substrings would otherwise be misrouted to the Python backend.
             trimmed.contains("function ") || trimmed.contains("const ") || trimmed.contains("let ") ||
-                trimmed.contains("var ") || trimmed.contains("=>") || trimmed.contains("console.") -> CodeLanguage.JAVASCRIPT
+                trimmed.contains("var ") || trimmed.contains("=>") || trimmed.contains("console.") ||
+                trimmed.contains("require(") -> CodeLanguage.JAVASCRIPT
+            PYTHON_DEF.containsMatchIn(trimmed) || PYTHON_IMPORT.containsMatchIn(trimmed) -> CodeLanguage.PYTHON
             else -> CodeLanguage.UNKNOWN
         }
+    }
+
+    private companion object {
+        /** Python-specific shapes, anchored per line so JS `import {…} from '…'` can't match. */
+        val PYTHON_DEF = Regex("(?m)^\\s*def\\s+\\w+\\s*\\(.*\\)\\s*:")
+        val PYTHON_IMPORT = Regex("(?m)^\\s*(import\\s+\\w+|from\\s+\\w+(\\.\\w+)*\\s+import\\s)")
+
+        /** 1MB cap on captured shell output. */
+        const val MAX_OUTPUT_CHARS = 1024 * 1024
     }
 }

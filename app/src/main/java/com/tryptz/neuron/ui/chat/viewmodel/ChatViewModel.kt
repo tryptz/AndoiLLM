@@ -68,6 +68,27 @@ class ChatViewModel @Inject constructor(
     private var messagesJob: Job? = null
     private var conversationId: String? = null
 
+    /**
+     * Run outputs keyed by CodeBlock id. Kept OUTSIDE the message list because
+     * messages are re-emitted wholesale by the Room flow — patching outputs
+     * into [ChatUiState.messages] directly would be clobbered by the next
+     * emission. Merged back into the messages at observe time instead.
+     */
+    private val codeOutputs = MutableStateFlow<Map<String, CodeOutput>>(emptyMap())
+
+    private fun observeMessagesJob(convId: String): Job = viewModelScope.launch {
+        conversationRepo.observeMessages(convId).combine(codeOutputs) { msgs, outputs ->
+            if (outputs.isEmpty()) msgs
+            else msgs.map { msg ->
+                msg.copy(codeBlocks = msg.codeBlocks.map { b ->
+                    outputs[b.id]?.let { o -> b.copy(output = o) } ?: b
+                })
+            }
+        }.collect { msgs ->
+            _uiState.update { it.copy(messages = msgs) }
+        }
+    }
+
     init {
         viewModelScope.launch {
             modelRepo.observeInstalled().combine(modelRepo.observeLocalModels()) { registry, local ->
@@ -118,11 +139,7 @@ class ChatViewModel @Inject constructor(
         conversationId = id
         // Cancel any prior collector so we don't leak coroutines and race on state.
         messagesJob?.cancel()
-        messagesJob = viewModelScope.launch {
-            conversationRepo.observeMessages(id).collect { msgs ->
-                _uiState.update { it.copy(messages = msgs) }
-            }
-        }
+        messagesJob = observeMessagesJob(id)
     }
 
     fun sendMessage(text: String, imageUris: List<String> = emptyList()) {
@@ -132,11 +149,7 @@ class ChatViewModel @Inject constructor(
                 // New conversation: start observing its messages.
                 conversationId = convId
                 messagesJob?.cancel()
-                messagesJob = viewModelScope.launch {
-                    conversationRepo.observeMessages(convId).collect { msgs ->
-                        _uiState.update { it.copy(messages = msgs) }
-                    }
-                }
+                messagesJob = observeMessagesJob(convId)
             }
             // Drive generation off the list returned by the use case, not the
             // (possibly stale) state — the Room Flow may not have re-emitted yet.
@@ -175,7 +188,28 @@ class ChatViewModel @Inject constructor(
         Timber.i("[op=cancel_generation] tokens_so_far=${_uiState.value.tokenCount}")
         generationJob?.cancel()
         inferenceEngine.cancelGeneration()
-        _uiState.update { it.copy(isGenerating = false) }
+
+        // Persist what was streamed so far — cancellation means the use case's
+        // Completed branch never runs, and without this the partial response
+        // vanishes from both the screen and the conversation.
+        val state = _uiState.value
+        val convId = conversationId
+        if (convId != null && state.streamingContent.isNotBlank()) {
+            viewModelScope.launch {
+                conversationRepo.addMessage(
+                    ChatMessage(
+                        id = java.util.UUID.randomUUID().toString(),
+                        conversationId = convId,
+                        role = MessageRole.ASSISTANT,
+                        content = state.streamingContent,
+                        thinkingContent = state.streamingThinking.ifBlank { null },
+                        tokenCount = state.tokenCount,
+                        tokensPerSec = state.tokSec
+                    )
+                )
+            }
+        }
+        _uiState.update { it.copy(isGenerating = false, streamingContent = "", streamingThinking = "") }
     }
 
     fun regenerateLastResponse() {
@@ -193,13 +227,10 @@ class ChatViewModel @Inject constructor(
     fun executeCode(codeBlock: CodeBlock) {
         viewModelScope.launch {
             val output = executeCode(codeBlock, settings.value)
-            _uiState.update { state ->
-                state.copy(messages = state.messages.map { msg ->
-                    msg.copy(codeBlocks = msg.codeBlocks.map { b ->
-                        if (b.id == codeBlock.id) b.copy(output = output) else b
-                    })
-                })
-            }
+            // Stored in the outputs map (merged at observe time), NOT patched
+            // into state.messages — the Room flow re-emits the raw list and
+            // would wipe an in-place patch on the next DB change.
+            codeOutputs.update { it + (codeBlock.id to output) }
         }
     }
 
@@ -209,6 +240,14 @@ class ChatViewModel @Inject constructor(
             _uiState.update {
                 it.copy(isLoadingModel = true, loadingStatus = "Freeing memory…", error = null)
             }
+
+            // Stop any in-flight generation BEFORE unloading: freeing the
+            // native context while getNextToken is inside llama_decode on the
+            // same pointers is a use-after-free crash.
+            generationJob?.cancel()
+            inferenceEngine.cancelGeneration()
+            generationJob?.join()
+            _uiState.update { it.copy(isGenerating = false, streamingContent = "", streamingThinking = "") }
 
             // Explicit unload + GC to push the previous model's ~5 GB mmap out
             // before allocating the next one. Without this, two large mmap
@@ -239,6 +278,10 @@ class ChatViewModel @Inject constructor(
                 .onFailure { e ->
                     val ms = System.currentTimeMillis() - tLoadStart
                     Timber.e(e, "[op=load_model_fail] modelId=$modelId name=\"$name\" ms=$ms err=${e.message}")
+                    // The previous model was already unloaded above — clear the
+                    // active-model preference so the UI can't claim a model is
+                    // ready while the engine has nothing loaded.
+                    settingsStore.setActiveModel(null)
                     _uiState.update {
                         it.copy(
                             isLoadingModel = false,

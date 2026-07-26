@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import com.tryptz.neuron.domain.model.ModelCapabilities
@@ -26,14 +27,29 @@ fun ChatInputBar(
     onSend: (String) -> Unit,
     onCancel: () -> Unit,
     onCameraTap: () -> Unit,
-    onMicTap: () -> Unit
+    onMicTap: () -> Unit,
+    prefill: String? = null,
+    onPrefillConsumed: () -> Unit = {}
 ) {
     val haptic = LocalHapticFeedback.current
     var inputText by remember { mutableStateOf(TextFieldValue()) }
 
+    // One-shot prefill (e.g. code sent back from the editor).
+    LaunchedEffect(prefill) {
+        if (!prefill.isNullOrEmpty()) {
+            inputText = TextFieldValue(prefill, selection = TextRange(prefill.length))
+            onPrefillConsumed()
+        }
+    }
+
+    // navigationBarsPadding is required with enableEdgeToEdge: without it the
+    // input bar draws underneath the gesture-navigation bar when the IME is closed.
     Surface(tonalElevation = 3.dp, modifier = Modifier.fillMaxWidth()) {
         Row(
-            modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp).imePadding(),
+            modifier = Modifier
+                .padding(horizontal = 12.dp, vertical = 8.dp)
+                .navigationBarsPadding()
+                .imePadding(),
             verticalAlignment = Alignment.Bottom
         ) {
             if (capabilities?.vision == true) {

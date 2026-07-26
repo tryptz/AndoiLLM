@@ -14,6 +14,19 @@ import com.tryptz.neuron.domain.model.*
 import com.tryptz.neuron.ui.animation.MotionTokens
 import com.tryptz.neuron.ui.settings.components.*
 
+// Searchable labels per section — keep in sync with the composables below.
+private val BASIC_SETTING_LABELS = listOf(
+    "temperature", "context length", "system prompt"
+)
+private val ADVANCED_SETTING_LABELS = listOf(
+    "top p", "top k", "min p", "repeat penalty", "reasoning effort"
+)
+private val EXPERT_SETTING_LABELS = listOf(
+    "inference backend", "thread count", "batch size", "kv cache quantization",
+    "max thinking tokens", "max tok/s cap", "thermal policy", "battery saver",
+    "code execution", "timeout", "memory limit", "allow network in code"
+)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SettingsPanel(
@@ -46,53 +59,69 @@ fun SettingsPanel(
 
             Spacer(Modifier.height(8.dp))
 
+            // Match the query against each section's actual setting labels —
+            // and while searching, reveal a matching section even if its
+            // disclosure level is collapsed.
+            val query = searchQuery.trim()
+            val searching = query.isNotBlank()
+            fun sectionMatches(labels: List<String>) =
+                !searching || labels.any { it.contains(query, ignoreCase = true) }
+
+            val basicVisible = sectionMatches(BASIC_SETTING_LABELS)
+            val advancedVisible = sectionMatches(ADVANCED_SETTING_LABELS)
+            val expertVisible = sectionMatches(EXPERT_SETTING_LABELS)
+
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 verticalArrangement = Arrangement.spacedBy(4.dp)
             ) {
-                // Basic — always visible
-                if (searchQuery.isBlank() || "temperature context system".contains(searchQuery, ignoreCase = true)) {
+                // Basic — always visible unless filtered out
+                if (basicVisible) {
                     item { BasicSettings(settings, activeModel, onUpdateSettings) }
                 }
 
                 // Advanced — expandable
-                item {
-                    Spacer(Modifier.height(8.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        SectionHeader("Advanced", Modifier.weight(1f))
-                        if (settingsLevel == SettingsLevel.BASIC) {
-                            TextButton(onClick = { onSetLevel(SettingsLevel.INTERMEDIATE) }) { Text("Show") }
+                if (advancedVisible) {
+                    item {
+                        Spacer(Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            SectionHeader("Advanced", Modifier.weight(1f))
+                            if (settingsLevel == SettingsLevel.BASIC) {
+                                TextButton(onClick = { onSetLevel(SettingsLevel.INTERMEDIATE) }) { Text("Show") }
+                            }
                         }
                     }
-                }
-                item {
-                    AnimatedVisibility(
-                        visible = settingsLevel >= SettingsLevel.INTERMEDIATE,
-                        enter = MotionTokens.settingsExpand(),
-                        exit = MotionTokens.settingsCollapse()
-                    ) {
-                        AdvancedSettings(settings, activeModel, onUpdateSettings)
+                    item {
+                        AnimatedVisibility(
+                            visible = settingsLevel >= SettingsLevel.INTERMEDIATE || searching,
+                            enter = MotionTokens.settingsExpand(),
+                            exit = MotionTokens.settingsCollapse()
+                        ) {
+                            AdvancedSettings(settings, activeModel, onUpdateSettings)
+                        }
                     }
                 }
 
                 // Expert — expandable
-                item {
-                    Spacer(Modifier.height(8.dp))
-                    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        SectionHeader("Expert", Modifier.weight(1f))
-                        if (settingsLevel < SettingsLevel.EXPERT) {
-                            TextButton(onClick = { onSetLevel(SettingsLevel.EXPERT) }) { Text("Show") }
+                if (expertVisible) {
+                    item {
+                        Spacer(Modifier.height(8.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            SectionHeader("Expert", Modifier.weight(1f))
+                            if (settingsLevel < SettingsLevel.EXPERT) {
+                                TextButton(onClick = { onSetLevel(SettingsLevel.EXPERT) }) { Text("Show") }
+                            }
                         }
                     }
-                }
-                item {
-                    AnimatedVisibility(
-                        visible = settingsLevel >= SettingsLevel.EXPERT,
-                        enter = MotionTokens.settingsExpand(),
-                        exit = MotionTokens.settingsCollapse()
-                    ) {
-                        ExpertSettings(settings, activeModel, telemetry, onUpdateSettings)
+                    item {
+                        AnimatedVisibility(
+                            visible = settingsLevel >= SettingsLevel.EXPERT || searching,
+                            enter = MotionTokens.settingsExpand(),
+                            exit = MotionTokens.settingsCollapse()
+                        ) {
+                            ExpertSettings(settings, activeModel, telemetry, onUpdateSettings)
+                        }
                     }
                 }
 
