@@ -13,7 +13,6 @@
 
 #if LLAMA_AVAILABLE
 #include "llama.h"
-#include "common.h"
 #endif
 
 // ── Global state ──

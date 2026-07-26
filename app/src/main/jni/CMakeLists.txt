@@ -15,9 +15,9 @@ if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/llama_cpp/CMakeLists.txt")
     set(LLAMA_BUILD_TESTS OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
-    # llama.cpp's `common` lib defaults to ${LLAMA_STANDALONE} (OFF when embedded).
-    # We link the JNI against it, so force-enable before add_subdirectory.
-    set(LLAMA_BUILD_COMMON ON CACHE BOOL "" FORCE)
+    # The JNI bridge uses only the core llama.h API — keep the `common` utils
+    # library (and the httplib/curl baggage it now vendors) out of the build.
+    set(LLAMA_BUILD_COMMON OFF CACHE BOOL "" FORCE)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
     # Disable OpenMP on Android — libomp threading boundaries don't match
     # ggml's tensor stride assumptions on NDK 29, causing SIGSEGV in
@@ -69,12 +69,7 @@ target_include_directories(neuron_inference PRIVATE
 )
 
 if(LLAMA_AVAILABLE)
-    # llama.cpp's `common` target doesn't PUBLIC-export its include dir, so
-    # add it explicitly for `#include "common.h"` to resolve.
-    target_include_directories(neuron_inference PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/llama_cpp/common
-    )
-    target_link_libraries(neuron_inference PRIVATE llama ggml common)
+    target_link_libraries(neuron_inference PRIVATE llama ggml)
     target_compile_definitions(neuron_inference PRIVATE LLAMA_AVAILABLE=1)
 else()
     target_compile_definitions(neuron_inference PRIVATE LLAMA_AVAILABLE=0)
