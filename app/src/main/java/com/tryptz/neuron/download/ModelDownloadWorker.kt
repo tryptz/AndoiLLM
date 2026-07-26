@@ -62,10 +62,13 @@ class ModelDownloadWorker @AssistedInject constructor(
             url: String? = null,
             filename: String? = null,
             displayName: String? = null,
-            sourceRepo: String? = null
+            sourceRepo: String? = null,
+            wifiOnly: Boolean = true
         ): OneTimeWorkRequest {
             val constraints = Constraints.Builder()
-                .setRequiredNetworkType(NetworkType.CONNECTED)
+                // Honors the "Wi-Fi only downloads" setting — these are
+                // multi-GB files, so metered data must be an explicit opt-in.
+                .setRequiredNetworkType(if (wifiOnly) NetworkType.UNMETERED else NetworkType.CONNECTED)
                 .setRequiresStorageNotLow(true)
                 .build()
 
@@ -116,7 +119,10 @@ class ModelDownloadWorker @AssistedInject constructor(
 
         Timber.i("[op=download_start] name=\"$modelName\" url=$url hf=$isHfDownload resume_from=$existingBytes")
 
-        setForeground(createForegroundInfo(modelName, modelId, 0))
+        // Best-effort: on Android 12+ starting a foreground service from the
+        // background can be refused — the download itself must not die for it.
+        runCatching { setForeground(createForegroundInfo(modelName, modelId, 0)) }
+            .onFailure { Timber.w(it, "setForeground refused; downloading without FGS") }
 
         return try {
             httpClient.prepareGet(url) {
@@ -124,6 +130,21 @@ class ModelDownloadWorker @AssistedInject constructor(
                     headers.append(HttpHeaders.Range, "bytes=$existingBytes-")
                 }
             }.execute { response ->
+                // Never stream an error body into the .gguf file: a 404/403/5xx
+                // page saved as a "model" gets registered as installed and then
+                // fails to load forever. 416 means our Range start is at/past
+                // EOF — i.e. the file on disk is already complete.
+                if (response.status == HttpStatusCode.RequestedRangeNotSatisfiable && existingBytes > 0L) {
+                    Timber.i("[op=download_already_complete] name=\"$modelName\" bytes=$existingBytes")
+                    registerCompleted(isHfDownload, modelId, modelName, sourceRepo, outputFile, existingBytes)
+                    return@execute Result.success(workDataOf(KEY_MODEL_ID to modelId))
+                }
+                if (!response.status.isSuccess()) {
+                    Timber.e("[op=download_http_error] name=\"$modelName\" status=${response.status}")
+                    // Client errors won't heal on retry; server errors might.
+                    return@execute if (response.status.value in 400..499) Result.failure() else Result.retry()
+                }
+
                 // 206 Partial Content => server honored the Range request and we
                 // append. Anything else (typically 200) => restart from scratch.
                 val isResume = existingBytes > 0L &&
@@ -172,27 +193,20 @@ class ModelDownloadWorker @AssistedInject constructor(
                                 KEY_TOTAL_BYTES to totalBytes,
                                 KEY_SPEED_BPS to speed
                             ))
-                            setForeground(createForegroundInfo(modelName, modelId, progress, totalBytes))
+                            runCatching { setForeground(createForegroundInfo(modelName, modelId, progress, totalBytes)) }
                             lastProgressUpdate = now
                         }
                     }
                 }
 
-                if (isHfDownload) {
-                    // HF-initiated download → register as a LocalModelEntity so
-                    // it appears in the user's library (no curated descriptor).
-                    modelRepository.registerDownloadedGguf(
-                        filePath = outputFile.absolutePath,
-                        displayName = modelName,
-                        sourceRepo = sourceRepo
-                    )
-                } else {
-                    modelRepository.registerInstalled(
-                        descriptorId = modelId,
-                        filePath = outputFile.absolutePath,
-                        sizeBytes = downloadedBytes
-                    )
+                // A short read (connection dropped mid-body) must not register a
+                // truncated file as a working model — retry and resume instead.
+                if (totalBytes > 0L && downloadedBytes < totalBytes) {
+                    Timber.w("[op=download_truncated] name=\"$modelName\" got=$downloadedBytes want=$totalBytes")
+                    return@execute Result.retry()
                 }
+
+                registerCompleted(isHfDownload, modelId, modelName, sourceRepo, outputFile, downloadedBytes)
 
                 Timber.i("[op=download_complete] name=\"$modelName\" bytes=$downloadedBytes hf=$isHfDownload")
                 Result.success(workDataOf(KEY_MODEL_ID to modelId))
@@ -202,6 +216,31 @@ class ModelDownloadWorker @AssistedInject constructor(
             // instead of re-downloading multiple GB from byte 0.
             Timber.e(e, "[op=download_fail] name=\"$modelName\" partial_kept_for_resume")
             Result.retry()
+        }
+    }
+
+    private suspend fun registerCompleted(
+        isHfDownload: Boolean,
+        modelId: String,
+        modelName: String,
+        sourceRepo: String?,
+        outputFile: File,
+        sizeBytes: Long
+    ) {
+        if (isHfDownload) {
+            // HF-initiated download → register as a LocalModelEntity so
+            // it appears in the user's library (no curated descriptor).
+            modelRepository.registerDownloadedGguf(
+                filePath = outputFile.absolutePath,
+                displayName = modelName,
+                sourceRepo = sourceRepo
+            )
+        } else {
+            modelRepository.registerInstalled(
+                descriptorId = modelId,
+                filePath = outputFile.absolutePath,
+                sizeBytes = sizeBytes
+            )
         }
     }
 
@@ -222,6 +261,17 @@ class ModelDownloadWorker @AssistedInject constructor(
             .setSilent(true)
             .build()
 
-        return ForegroundInfo(notificationIdFor(modelId), notification)
+        // The service type is mandatory on Android 14+ — the 2-arg constructor
+        // makes startForeground throw MissingForegroundServiceTypeException,
+        // killing every download instantly on those devices.
+        return if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            ForegroundInfo(
+                notificationIdFor(modelId),
+                notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+            )
+        } else {
+            ForegroundInfo(notificationIdFor(modelId), notification)
+        }
     }
 }

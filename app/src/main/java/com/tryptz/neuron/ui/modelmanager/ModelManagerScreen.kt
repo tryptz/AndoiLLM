@@ -119,6 +119,22 @@ fun ModelManagerScreen(
                     IconButton(onClick = onBack) {
                         Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back")
                     }
+                },
+                actions = {
+                    // Wi-Fi-only downloads: gates the WorkManager network
+                    // constraint (UNMETERED vs CONNECTED) for multi-GB models.
+                    val wifiOnly by viewModel.wifiOnly.collectAsState()
+                    Icon(
+                        Icons.Default.Wifi,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Switch(
+                        checked = wifiOnly,
+                        onCheckedChange = { viewModel.setWifiOnly(it) }
+                    )
+                    Spacer(Modifier.width(12.dp))
                 }
             )
         }
@@ -799,7 +815,7 @@ private fun HfRepoCard(
                                 )
                                 file.size?.let {
                                     Text(
-                                        formatBytes(it),
+                                        it.formatBytes(),
                                         style = MaterialTheme.typography.bodySmall,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )

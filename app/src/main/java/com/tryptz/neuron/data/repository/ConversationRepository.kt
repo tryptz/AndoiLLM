@@ -1,5 +1,6 @@
 package com.tryptz.neuron.data.repository
 
+import com.tryptz.neuron.code.sandbox.CodeExecutor
 import com.tryptz.neuron.data.local.dao.ConversationDao
 import com.tryptz.neuron.data.local.dao.MessageDao
 import com.tryptz.neuron.data.local.entity.ConversationEntity
@@ -7,6 +8,7 @@ import com.tryptz.neuron.data.local.entity.MessageEntity
 import com.tryptz.neuron.domain.model.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
+import com.tryptz.neuron.util.parseCodeBlocks
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.util.UUID
@@ -29,7 +31,8 @@ interface ConversationRepository {
 
 class ConversationRepositoryImpl @Inject constructor(
     private val conversationDao: ConversationDao,
-    private val messageDao: MessageDao
+    private val messageDao: MessageDao,
+    private val codeExecutor: CodeExecutor
 ) : ConversationRepository {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -92,15 +95,27 @@ class ConversationRepositoryImpl @Inject constructor(
     private fun ConversationEntity.toDomain() = Conversation(id, title, modelId, createdAt, updatedAt, presetId)
     private fun Conversation.toEntity() = ConversationEntity(id, title, modelId, presetId, createdAt, updatedAt)
 
-    private fun MessageEntity.toDomain() = ChatMessage(
-        id = id, conversationId = conversationId,
-        role = runCatching { MessageRole.valueOf(role) }.getOrDefault(MessageRole.USER),
-        content = content,
-        thinkingContent = thinkingContent,
-        imageUris = imageUrisJson?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrDefault(emptyList()) } ?: emptyList(),
-        timestampMs = timestampMs, tokenCount = tokenCount,
-        tokensPerSec = tokensPerSec, parentId = parentId
-    )
+    private fun MessageEntity.toDomain(): ChatMessage {
+        val messageRole = runCatching { MessageRole.valueOf(role) }.getOrDefault(MessageRole.USER)
+        return ChatMessage(
+            id = id, conversationId = conversationId,
+            role = messageRole,
+            content = content,
+            thinkingContent = thinkingContent,
+            imageUris = imageUrisJson?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrDefault(emptyList()) } ?: emptyList(),
+            timestampMs = timestampMs, tokenCount = tokenCount,
+            tokensPerSec = tokensPerSec, parentId = parentId,
+            // Code blocks aren't persisted as a column — they are a pure
+            // function of the content, so re-derive them on read. Without this
+            // every message loaded from Room had codeBlocks = emptyList() and
+            // the chat Run/Edit code feature was unreachable.
+            codeBlocks = if (messageRole == MessageRole.ASSISTANT && content.contains("```")) {
+                parseCodeBlocks(id, content, codeExecutor::detectLanguage)
+            } else {
+                emptyList()
+            }
+        )
+    }
 
     private fun ChatMessage.toEntity() = MessageEntity(
         id = id, conversationId = conversationId,

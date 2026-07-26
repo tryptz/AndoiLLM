@@ -5,6 +5,7 @@
 #include <atomic>
 #include <chrono>
 #include <fstream>
+#include <vector>
 
 #define TAG "NeuronInference"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
@@ -23,6 +24,7 @@ struct ModelContext {
     llama_sampler* sampler = nullptr;
 #endif
     int n_ctx = 0;
+    int n_batch = 512;
     std::mutex mtx;
 };
 
@@ -34,6 +36,7 @@ struct CompletionContext {
     std::atomic<bool> cancelled{false};
     float last_tok_sec = 0.0f;
     int tokens_generated = 0;
+    int max_tokens = 0; // 0 = unlimited (bounded by context size)
 };
 
 static std::atomic<float> g_last_tok_sec{0.0f};
@@ -110,8 +113,11 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_loadModel(
     cparams.n_threads_batch = cparams.n_threads;
 
     // Flash attention is REQUIRED when the V cache is quantized (Q8_0/Q4_0) —
-    // the standard attention kernel only supports F16 V. Also faster on CPU.
-    cparams.flash_attn = true;
+    // the standard attention kernel only supports F16 V. With an F16 cache let
+    // llama.cpp pick (AUTO) so models without FA support still load.
+    cparams.flash_attn_type = kvCacheTypeQuant != 0
+        ? LLAMA_FLASH_ATTN_TYPE_ENABLED
+        : LLAMA_FLASH_ATTN_TYPE_AUTO;
 
     // KV cache quantization
     switch (kvCacheTypeQuant) {
@@ -131,6 +137,7 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_loadModel(
     mc->model = model;
     mc->ctx = ctx;
     mc->n_ctx = contextLength;
+    mc->n_batch = batchSize > 0 ? batchSize : 512;
 
     // Initialize sampler
     mc->sampler = llama_sampler_chain_init(llama_sampler_chain_default_params());
@@ -150,10 +157,15 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_unloadModel(
 #if LLAMA_AVAILABLE
     auto* mc = reinterpret_cast<ModelContext*>(handle);
     if (!mc) return;
-    std::lock_guard<std::mutex> lock(mc->mtx);
-    if (mc->sampler) llama_sampler_free(mc->sampler);
-    if (mc->ctx) llama_free(mc->ctx);
-    if (mc->model) llama_model_free(mc->model);
+    {
+        std::lock_guard<std::mutex> lock(mc->mtx);
+        if (mc->sampler) llama_sampler_free(mc->sampler);
+        if (mc->ctx) llama_free(mc->ctx);
+        if (mc->model) llama_model_free(mc->model);
+        mc->sampler = nullptr;
+        mc->ctx = nullptr;
+        mc->model = nullptr;
+    }
     delete mc;
     LOGI("Model unloaded");
 #endif
@@ -187,7 +199,8 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_startCompletion(
     std::string promptCpp(promptStr);
     env->ReleaseStringUTFChars(prompt, promptStr);
 
-    // Tokenize prompt
+    // Tokenize prompt. add_special=true lets the vocab decide whether a BOS
+    // belongs at the front (the Kotlin formatter never emits literal BOS text).
     const llama_vocab* vocab = llama_model_get_vocab(mc->model);
     std::vector<llama_token> tokens(promptCpp.size() + 16);
     int n_tokens = llama_tokenize(vocab, promptCpp.c_str(), promptCpp.size(),
@@ -197,9 +210,18 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_startCompletion(
         n_tokens = llama_tokenize(vocab, promptCpp.c_str(), promptCpp.size(),
                                    tokens.data(), tokens.size(), true, true);
     }
+    if (n_tokens < 0) {
+        LOGE("Failed to tokenize prompt");
+        return 0;
+    }
     tokens.resize(n_tokens);
 
     LOGI("Tokenized prompt: %d tokens", n_tokens);
+
+    if (n_tokens >= mc->n_ctx) {
+        LOGE("Prompt (%d tokens) does not fit in context (%d)", n_tokens, mc->n_ctx);
+        return 0;
+    }
 
     // Configure sampler
     if (mc->sampler) llama_sampler_free(mc->sampler);
@@ -216,11 +238,20 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_startCompletion(
     llama_sampler_chain_add(mc->sampler, llama_sampler_init_temp(temperature));
     llama_sampler_chain_add(mc->sampler, llama_sampler_init_dist(LLAMA_DEFAULT_SEED));
 
-    // Eval prompt
-    llama_batch batch = llama_batch_get_one(tokens.data(), n_tokens);
-    if (llama_decode(mc->ctx, batch) != 0) {
-        LOGE("Failed to eval prompt");
-        return 0;
+    // Each turn receives the full formatted conversation, so start from a
+    // clean cache — otherwise turn N is appended after turn N-1's cells at
+    // wrong positions and the model emits garbage from the 2nd message on.
+    llama_memory_clear(llama_get_memory(mc->ctx), true);
+
+    // Eval prompt in n_batch-sized chunks: llama_decode rejects batches
+    // larger than n_batch, which would silently kill any prompt > 512 tokens.
+    for (int i = 0; i < n_tokens; i += mc->n_batch) {
+        const int n_chunk = std::min(mc->n_batch, n_tokens - i);
+        llama_batch batch = llama_batch_get_one(tokens.data() + i, n_chunk);
+        if (llama_decode(mc->ctx, batch) != 0) {
+            LOGE("Failed to eval prompt chunk at %d", i);
+            return 0;
+        }
     }
 
     auto* cc = new CompletionContext();
@@ -228,6 +259,10 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_startCompletion(
     cc->sampler = mc->sampler;
     cc->cancelled = false;
     cc->tokens_generated = 0;
+    // Bound generation so a non-terminating model can't chew through the
+    // whole context; leave headroom for the prompt already in cache.
+    int budget = mc->n_ctx - n_tokens - 1;
+    cc->max_tokens = (maxTokens > 0) ? std::min(maxTokens, budget) : budget;
 
     return reinterpret_cast<jlong>(cc);
 #else
@@ -242,10 +277,12 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_getNextToken(
 #if LLAMA_AVAILABLE
     auto* cc = reinterpret_cast<CompletionContext*>(completionHandle);
     if (!cc || !cc->ctx || !cc->sampler || cc->cancelled.load()) return nullptr;
+    if (cc->max_tokens > 0 && cc->tokens_generated >= cc->max_tokens) return nullptr;
 
     auto t_start = std::chrono::high_resolution_clock::now();
 
-    // Sample next token
+    // Sample next token. llama_sampler_sample already accepts the sampled
+    // token into the chain (penalty window) — do NOT accept it again.
     llama_token token = llama_sampler_sample(cc->sampler, cc->ctx, -1);
 
     // Check for EOS
@@ -253,9 +290,6 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_getNextToken(
     if (llama_vocab_is_eog(vocab, token)) {
         return nullptr; // end of generation
     }
-
-    // Accept and decode
-    llama_sampler_accept(cc->sampler, token);
 
     // Convert token to string
     char buf[256];
@@ -295,6 +329,16 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_cancelCompletion(
 #endif
 }
 
+JNIEXPORT void JNICALL
+Java_com_tryptz_neuron_inference_bridge_LlamaBridge_freeCompletion(
+    JNIEnv*, jobject, jlong completionHandle)
+{
+#if LLAMA_AVAILABLE
+    auto* cc = reinterpret_cast<CompletionContext*>(completionHandle);
+    delete cc; // ctx/sampler are owned by ModelContext, not freed here
+#endif
+}
+
 // ── Tokenizer ──
 
 JNIEXPORT jintArray JNICALL
@@ -310,9 +354,12 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_tokenize(
 
     std::vector<llama_token> tokens(strlen(str) + 16);
     int n = llama_tokenize(vocab, str, strlen(str), tokens.data(), tokens.size(), true, true);
+    if (n < 0) {
+        tokens.resize(-n);
+        n = llama_tokenize(vocab, str, strlen(str), tokens.data(), tokens.size(), true, true);
+    }
     env->ReleaseStringUTFChars(text, str);
-
-    if (n < 0) { tokens.resize(-n); n = llama_tokenize(vocab, str, strlen(str), tokens.data(), tokens.size(), true, true); }
+    if (n < 0) n = 0;
     tokens.resize(n);
 
     jintArray result = env->NewIntArray(n);
@@ -355,7 +402,8 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_getContextUsed(
 #if LLAMA_AVAILABLE
     auto* mc = reinterpret_cast<ModelContext*>(handle);
     if (!mc || !mc->ctx) return 0;
-    return llama_get_kv_cache_used_cells(mc->ctx);
+    // pos_max is -1 for an empty cache, so +1 yields the used cell count.
+    return (jint)(llama_memory_seq_pos_max(llama_get_memory(mc->ctx), 0) + 1);
 #else
     return 0;
 #endif
@@ -374,11 +422,11 @@ Java_com_tryptz_neuron_inference_bridge_LlamaBridge_getModelRamUsageMb(
     JNIEnv*, jobject, jlong handle)
 {
 #if LLAMA_AVAILABLE
-    // Rough estimate based on context size
     auto* mc = reinterpret_cast<ModelContext*>(handle);
     if (!mc || !mc->ctx) return 0;
-    // This is approximate — llama.cpp doesn't expose exact memory usage easily
-    return (int)(llama_get_kv_cache_used_cells(mc->ctx) * 4 / (1024 * 1024)); // very rough
+    // Size of the serializable context state (KV cache + logits + embeddings).
+    // Excludes model weights (mmapped) but tracks the part that grows with use.
+    return (jint)(llama_state_get_size(mc->ctx) / (1024 * 1024));
 #else
     return 0;
 #endif

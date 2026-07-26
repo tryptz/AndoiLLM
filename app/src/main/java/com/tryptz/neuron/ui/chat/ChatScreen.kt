@@ -22,7 +22,9 @@ import com.tryptz.neuron.ui.settings.SettingsPanel
 fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel(),
     onNavigateToModelManager: () -> Unit = {},
-    onNavigateToEditor: (String, String) -> Unit = { _, _ -> }
+    onNavigateToEditor: (String, String) -> Unit = { _, _ -> },
+    pendingEditorCode: String? = null,
+    onPendingEditorCodeConsumed: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsState()
     val settings by viewModel.settings.collectAsState()
@@ -69,7 +71,9 @@ fun ChatScreen(
                 onSend = { viewModel.sendMessage(it) },
                 onCancel = viewModel::cancelGeneration,
                 onCameraTap = {},
-                onMicTap = {}
+                onMicTap = {},
+                prefill = pendingEditorCode,
+                onPrefillConsumed = onPendingEditorCodeConsumed
             )
         }
     ) { padding ->

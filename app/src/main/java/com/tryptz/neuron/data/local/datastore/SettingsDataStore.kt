@@ -150,4 +150,8 @@ open class SettingsDataStore @Inject constructor(
     suspend fun setDarkMode(dark: Boolean) {
         store.edit { it[Keys.DARK_MODE] = dark }
     }
+
+    suspend fun setWifiOnlyDownloads(wifiOnly: Boolean) {
+        store.edit { it[Keys.WIFI_ONLY_DOWNLOADS] = wifiOnly }
+    }
 }

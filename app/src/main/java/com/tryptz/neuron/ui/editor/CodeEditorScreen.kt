@@ -23,9 +23,14 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.input.TransformedText
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.tryptz.neuron.code.sandbox.CodeExecutor
@@ -33,6 +38,23 @@ import com.tryptz.neuron.domain.model.*
 import com.tryptz.neuron.ui.chat.components.CodeOutputPanel
 import com.tryptz.neuron.ui.theme.CodeFontFamily
 import kotlinx.coroutines.launch
+
+/** Highlights every (case-insensitive) occurrence of [query] in the editor text. */
+private class SearchHighlightTransformation(private val query: String) : VisualTransformation {
+    override fun filter(text: AnnotatedString): TransformedText {
+        val builder = AnnotatedString.Builder(text)
+        var idx = text.text.indexOf(query, ignoreCase = true)
+        while (idx >= 0) {
+            builder.addStyle(
+                SpanStyle(background = Color(0x66FFD33D)),
+                idx,
+                idx + query.length
+            )
+            idx = text.text.indexOf(query, idx + query.length, ignoreCase = true)
+        }
+        return TransformedText(builder.toAnnotatedString(), OffsetMapping.Identity)
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -84,6 +106,10 @@ fun CodeEditorScreen(
     // Undo/redo stacks
     val undoStack = remember { mutableStateListOf<TextFieldValue>() }
     val redoStack = remember { mutableStateListOf<TextFieldValue>() }
+
+    // ONE scroll state shared by the gutter and the text field — separate
+    // states let the line numbers scroll independently of the code.
+    val editorScrollState = rememberScrollState()
 
     // Run button animation
     val runIconRotation by animateFloatAsState(
@@ -155,7 +181,9 @@ fun CodeEditorScreen(
                             Icons.Default.PlayArrow,
                             "Run",
                             tint = Color(0xFF3FB950),
-                            modifier = Modifier.size(24.dp)
+                            modifier = Modifier
+                                .size(24.dp)
+                                .graphicsLayer { rotationZ = runIconRotation }
                         )
                     }
 
@@ -169,8 +197,12 @@ fun CodeEditorScreen(
             )
         },
         bottomBar = {
-            // Extra coding keys row
-            Surface(tonalElevation = 3.dp) {
+            // Extra coding keys row. imePadding is essential: these chips exist
+            // to be tapped WHILE typing, and without it the keyboard covers them.
+            Surface(
+                tonalElevation = 3.dp,
+                modifier = Modifier.navigationBarsPadding().imePadding()
+            ) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -183,14 +215,19 @@ fun CodeEditorScreen(
                             onClick = {
                                 haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                 val insert = if (key == "Tab") "    " else key
-                                val newText = code.text.substring(0, code.selection.start) +
+                                // selection.min/max, NOT start/end — a right-to-left
+                                // selection has start > end and start/end would
+                                // duplicate the selected text around the insert.
+                                val selStart = code.selection.min
+                                val selEnd = code.selection.max
+                                val newText = code.text.substring(0, selStart) +
                                               insert +
-                                              code.text.substring(code.selection.end)
+                                              code.text.substring(selEnd)
                                 undoStack.add(code)
                                 redoStack.clear()
                                 code = TextFieldValue(
                                     text = newText,
-                                    selection = androidx.compose.ui.text.TextRange(code.selection.start + insert.length)
+                                    selection = androidx.compose.ui.text.TextRange(selStart + insert.length)
                                 )
                             },
                             label = { Text(key, fontFamily = CodeFontFamily, fontSize = 13.sp) }
@@ -211,6 +248,18 @@ fun CodeEditorScreen(
                 enter = expandVertically() + fadeIn(),
                 exit = shrinkVertically() + fadeOut()
             ) {
+                val matchCount = remember(searchQuery, code.text) {
+                    if (searchQuery.isBlank()) 0
+                    else {
+                        var count = 0
+                        var idx = code.text.indexOf(searchQuery, ignoreCase = true)
+                        while (idx >= 0) {
+                            count++
+                            idx = code.text.indexOf(searchQuery, idx + searchQuery.length, ignoreCase = true)
+                        }
+                        count
+                    }
+                }
                 OutlinedTextField(
                     value = searchQuery,
                     onValueChange = { searchQuery = it },
@@ -219,8 +268,17 @@ fun CodeEditorScreen(
                     singleLine = true,
                     leadingIcon = { Icon(Icons.Default.Search, null) },
                     trailingIcon = {
-                        IconButton(onClick = { showSearch = false; searchQuery = "" }) {
-                            Icon(Icons.Default.Close, "Close search")
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (searchQuery.isNotBlank()) {
+                                Text(
+                                    "$matchCount",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            IconButton(onClick = { showSearch = false; searchQuery = "" }) {
+                                Icon(Icons.Default.Close, "Close search")
+                            }
                         }
                     }
                 )
@@ -242,7 +300,7 @@ fun CodeEditorScreen(
                     val lineCount = code.text.count { it == '\n' } + 1
                     Column(
                         modifier = Modifier
-                            .verticalScroll(rememberScrollState())
+                            .verticalScroll(editorScrollState)
                             .padding(horizontal = 8.dp, vertical = 12.dp)
                     ) {
                         for (i in 1..lineCount) {
@@ -278,13 +336,18 @@ fun CodeEditorScreen(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .verticalScroll(rememberScrollState())
+                        .verticalScroll(editorScrollState)
                         .padding(12.dp),
                     textStyle = TextStyle(
                         fontFamily = CodeFontFamily,
                         fontSize = fontSize.sp,
                         color = Color(0xFFC9D1D9)
                     ),
+                    visualTransformation = if (searchQuery.isBlank()) {
+                        VisualTransformation.None
+                    } else {
+                        remember(searchQuery) { SearchHighlightTransformation(searchQuery) }
+                    },
                     cursorBrush = SolidColor(MaterialTheme.colorScheme.primary)
                 )
             }

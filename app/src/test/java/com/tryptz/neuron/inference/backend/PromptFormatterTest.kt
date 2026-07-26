@@ -61,9 +61,12 @@ class PromptFormatterTest {
     // --- Llama3 ---
 
     @Test
-    fun `Llama3 format includes begin of text`() {
+    fun `Llama3 format has no literal BOS`() {
+        // BOS is added by the native tokenizer (add_special=true); a literal
+        // <|begin_of_text|> here would produce a double BOS.
         val result = PromptFormatter.format(listOf(userMsg), descriptorFor(ChatTemplate.LLAMA3), defaultSettings)
-        assertTrue(result.startsWith("<|begin_of_text|>"))
+        assertTrue(!result.contains("<|begin_of_text|>"))
+        assertTrue(result.startsWith("<|start_header_id|>"))
     }
 
     @Test
@@ -143,9 +146,11 @@ class PromptFormatterTest {
     }
 
     @Test
-    fun `Mistral format starts with s tag`() {
+    fun `Mistral format has no literal BOS`() {
+        // Same as Llama3: the tokenizer owns <s>, the template must not emit it.
         val result = PromptFormatter.format(listOf(userMsg), descriptorFor(ChatTemplate.MISTRAL), defaultSettings)
-        assertTrue(result.startsWith("<s>"))
+        assertTrue(!result.contains("<s>"))
+        assertTrue(result.startsWith("[INST]"))
     }
 
     @Test

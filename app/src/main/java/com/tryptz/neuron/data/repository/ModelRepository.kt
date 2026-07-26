@@ -9,6 +9,7 @@ import com.tryptz.neuron.data.local.entity.LocalModelEntity
 import com.tryptz.neuron.data.model.ModelRegistry
 import com.tryptz.neuron.domain.model.*
 import com.tryptz.neuron.util.DeviceMonitor
+import com.tryptz.neuron.util.GgufMetadataReader
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -161,17 +162,21 @@ class ModelRepositoryImpl @Inject constructor(
         sourceRepo: String?
     ): LocalModelEntity = withContext(Dispatchers.IO) {
         val file = File(filePath)
+        // The file is right here — read its real metadata instead of stamping
+        // every HF download as ChatML/4096, which gave Llama-3/Gemma/Phi
+        // downloads the wrong prompt format and a bogus context cap.
+        val metadata = GgufMetadataReader.read(file)
         val entity = LocalModelEntity(
             id = UUID.randomUUID().toString(),
             name = displayName.ifBlank { file.nameWithoutExtension },
             fileName = file.name,
             filePath = filePath,
             fileSizeBytes = file.length(),
-            chatTemplate = ChatTemplate.CHATML.raw,
-            contextLength = 4096,
-            architecture = sourceRepo,
-            quantization = null,
-            parameterCount = null,
+            chatTemplate = (metadata?.inferredChatTemplate ?: ChatTemplate.CHATML).raw,
+            contextLength = metadata?.contextLength?.coerceIn(512, 131072) ?: 4096,
+            architecture = metadata?.architecture ?: sourceRepo,
+            quantization = metadata?.quantization?.label,
+            parameterCount = metadata?.parameterCount,
             installedAt = System.currentTimeMillis()
         )
         localModelDao.insert(entity)

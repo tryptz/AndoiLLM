@@ -1,5 +1,6 @@
 package com.tryptz.neuron.data.repository
 
+import com.tryptz.neuron.code.sandbox.CodeExecutorImpl
 import com.tryptz.neuron.data.local.dao.ConversationDao
 import com.tryptz.neuron.data.local.dao.MessageDao
 import com.tryptz.neuron.data.local.entity.ConversationEntity
@@ -72,7 +73,7 @@ class ConversationRepositoryTest {
     private fun newRepo(): Triple<ConversationRepositoryImpl, FakeConversationDao, FakeMessageDao> {
         val convDao = FakeConversationDao()
         val msgDao = FakeMessageDao()
-        return Triple(ConversationRepositoryImpl(convDao, msgDao), convDao, msgDao)
+        return Triple(ConversationRepositoryImpl(convDao, msgDao, CodeExecutorImpl()), convDao, msgDao)
     }
 
     private fun userMsg(convId: String, content: String, ts: Long) = ChatMessage(

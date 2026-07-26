@@ -53,8 +53,10 @@ object PromptFormatter {
         append("<|im_start|>assistant\n")
     }
 
+    // NOTE: no literal BOS tokens (<|begin_of_text|>, <s>) in any template —
+    // the native tokenizer adds BOS itself (add_special=true), and a literal
+    // one here would produce a double BOS, which degrades generation.
     private fun formatLlama3(messages: List<ChatMessage>, settings: InferenceSettings) = buildString {
-        append("<|begin_of_text|>")
         if (settings.systemPrompt.isNotBlank()) {
             append("<|start_header_id|>system<|end_header_id|>\n\n${settings.systemPrompt}<|eot_id|>")
         }
@@ -86,7 +88,6 @@ object PromptFormatter {
     }
 
     private fun formatMistral(messages: List<ChatMessage>, settings: InferenceSettings) = buildString {
-        append("<s>")
         if (settings.systemPrompt.isNotBlank()) append("[INST] ${settings.systemPrompt}\n\n")
         for ((i, msg) in messages.withIndex()) {
             if (msg.role == MessageRole.USER) {

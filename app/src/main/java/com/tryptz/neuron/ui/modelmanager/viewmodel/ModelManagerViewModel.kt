@@ -4,8 +4,10 @@ import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.work.ExistingWorkPolicy
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
+import com.tryptz.neuron.data.local.datastore.SettingsDataStore
 import com.tryptz.neuron.data.local.entity.LocalModelEntity
 import com.tryptz.neuron.data.remote.HfFile
 import com.tryptz.neuron.data.remote.HfRepoSummary
@@ -68,11 +70,20 @@ class ModelManagerViewModel @Inject constructor(
     private val modelRepo: ModelRepository,
     private val workManager: WorkManager,
     private val deviceMonitor: DeviceMonitor,
-    private val hfClient: HuggingFaceClient
+    private val hfClient: HuggingFaceClient,
+    private val settingsStore: SettingsDataStore
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ModelManagerUiState())
     val uiState: StateFlow<ModelManagerUiState> = _uiState.asStateFlow()
+
+    /** Gates download constraints (UNMETERED vs CONNECTED); defaults to Wi-Fi only. */
+    val wifiOnly: StateFlow<Boolean> = settingsStore.isWifiOnlyDownloads
+        .stateIn(viewModelScope, SharingStarted.Eagerly, true)
+
+    fun setWifiOnly(enabled: Boolean) {
+        viewModelScope.launch { settingsStore.setWifiOnlyDownloads(enabled) }
+    }
 
     init {
         _uiState.update {
@@ -103,16 +114,21 @@ class ModelManagerViewModel @Inject constructor(
      *  cancels the prior collector instead of leaking one per call. */
     private val downloadCollectors = mutableMapOf<String, Job>()
 
-    fun downloadModel(modelId: String) {
-        val request = ModelDownloadWorker.buildRequest(modelId)
-        workManager.enqueue(request)
+    private fun uniqueWorkName(modelId: String) = "model_download_$modelId"
 
+    fun downloadModel(modelId: String) {
         // Cancel any collector left over from a previous download of this model.
         downloadCollectors.remove(modelId)?.cancel()
 
         downloadCollectors[modelId] = viewModelScope.launch {
-            workManager.getWorkInfoByIdFlow(request.id).collect { info ->
-                if (info == null) return@collect
+            val wifiOnly = settingsStore.isWifiOnlyDownloads.first()
+            val request = ModelDownloadWorker.buildRequest(modelId, wifiOnly = wifiOnly)
+            // Unique + KEEP: a second tap while a download (or its retry
+            // backoff) exists must NOT spawn a second worker interleaving
+            // writes into the same output file.
+            workManager.enqueueUniqueWork(uniqueWorkName(modelId), ExistingWorkPolicy.KEEP, request)
+            workManager.getWorkInfosForUniqueWorkFlow(uniqueWorkName(modelId)).collect { infos ->
+                val info = infos.firstOrNull() ?: return@collect
                 val downloaded = info.progress.getLong(ModelDownloadWorker.KEY_DOWNLOADED_BYTES, 0)
                 val total = info.progress.getLong(ModelDownloadWorker.KEY_TOTAL_BYTES, 0)
                 val speed = info.progress.getLong(ModelDownloadWorker.KEY_SPEED_BPS, 0)
@@ -143,6 +159,7 @@ class ModelManagerViewModel @Inject constructor(
     }
 
     fun cancelDownload(modelId: String) {
+        workManager.cancelUniqueWork(uniqueWorkName(modelId))
         workManager.cancelAllWorkByTag("model_download_$modelId")
         downloadCollectors.remove(modelId)?.cancel()
         _uiState.update { it.copy(downloads = it.downloads - modelId) }
@@ -324,18 +341,20 @@ class ModelManagerViewModel @Inject constructor(
         val displayName = "${repoId.substringAfterLast('/')} / $filename"
         Timber.i("[op=hf_download_enqueue] id=$syntheticId repo=$repoId file=${file.path} url=$url")
 
-        val request = ModelDownloadWorker.buildRequest(
-            modelId = syntheticId,
-            url = url,
-            filename = filename,
-            displayName = displayName,
-            sourceRepo = repoId
-        )
-        workManager.enqueue(request)
         downloadCollectors.remove(syntheticId)?.cancel()
         downloadCollectors[syntheticId] = viewModelScope.launch {
-            workManager.getWorkInfoByIdFlow(request.id).collect { info ->
-                if (info == null) return@collect
+            val wifiOnly = settingsStore.isWifiOnlyDownloads.first()
+            val request = ModelDownloadWorker.buildRequest(
+                modelId = syntheticId,
+                url = url,
+                filename = filename,
+                displayName = displayName,
+                sourceRepo = repoId,
+                wifiOnly = wifiOnly
+            )
+            workManager.enqueueUniqueWork(uniqueWorkName(syntheticId), ExistingWorkPolicy.KEEP, request)
+            workManager.getWorkInfosForUniqueWorkFlow(uniqueWorkName(syntheticId)).collect { infos ->
+                val info = infos.firstOrNull() ?: return@collect
                 val downloaded = info.progress.getLong(ModelDownloadWorker.KEY_DOWNLOADED_BYTES, 0)
                 val total = info.progress.getLong(ModelDownloadWorker.KEY_TOTAL_BYTES, 0)
                 val speed = info.progress.getLong(ModelDownloadWorker.KEY_SPEED_BPS, 0)

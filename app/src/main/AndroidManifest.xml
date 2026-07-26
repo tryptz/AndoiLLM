@@ -33,6 +33,13 @@
             </intent-filter>
         </activity>
 
+        <!-- WorkManager's foreground service must declare a type on Android 14+,
+             and the library manifest doesn't — merge it in here. -->
+        <service
+            android:name="androidx.work.impl.foreground.SystemForegroundService"
+            android:foregroundServiceType="dataSync"
+            tools:node="merge" />
+
         <provider
             android:name="androidx.startup.InitializationProvider"
             android:authorities="${applicationId}.androidx-startup"

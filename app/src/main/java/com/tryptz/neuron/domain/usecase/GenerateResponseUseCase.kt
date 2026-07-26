@@ -5,7 +5,7 @@ import com.tryptz.neuron.data.repository.ConversationRepository
 import com.tryptz.neuron.domain.model.*
 import com.tryptz.neuron.inference.backend.InferenceEngine
 import com.tryptz.neuron.inference.backend.InferenceEvent
-import com.tryptz.neuron.util.extractCodeBlocks
+import com.tryptz.neuron.util.parseCodeBlocks
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
 import java.util.UUID
@@ -57,15 +57,12 @@ class GenerateResponseUseCase @Inject constructor(
                     emit(GenerationResult.Streaming(fullContent, fullThinking, true, lastTokSec, tokenCount))
                 }
                 is InferenceEvent.Completed -> {
-                    val codeBlocks = fullContent.extractCodeBlocks().map { (lang, code) ->
-                        CodeBlock(
-                            id = UUID.randomUUID().toString(),
-                            language = codeExecutor.detectLanguage(code),
-                            code = code
-                        )
-                    }
+                    val msgId = UUID.randomUUID().toString()
+                    // Fence tag first (the model said what language it wrote);
+                    // heuristic detection only for blank/unknown tags.
+                    val codeBlocks = parseCodeBlocks(msgId, fullContent, codeExecutor::detectLanguage)
                     val msg = ChatMessage(
-                        id = UUID.randomUUID().toString(),
+                        id = msgId,
                         conversationId = conversationId,
                         role = MessageRole.ASSISTANT,
                         content = fullContent,
