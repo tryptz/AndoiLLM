@@ -26,8 +26,8 @@ class NeuronApp : Application(), Configuration.Provider {
     /**
      * Custom Timber tree that prefixes every auto-derived class-name tag with
      * `Neuron.` — so `adb logcat | grep Neuron` captures the entire Kotlin side
-     * of the app while the native side already logs as `NeuronInference` /
-     * `LlamaCpp`. One grep keyword sees the whole stack.
+     * of the app while the Rust core (and llama.cpp through it) logs as
+     * `NeuronCore`. One grep keyword sees the whole stack.
      */
     private class NeuronTree : Timber.DebugTree() {
         override fun createStackElementTag(element: StackTraceElement): String {

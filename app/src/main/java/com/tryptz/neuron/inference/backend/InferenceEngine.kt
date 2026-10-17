@@ -1,11 +1,36 @@
 package com.tryptz.neuron.inference.backend
 
 import com.tryptz.neuron.domain.model.*
-import com.tryptz.neuron.inference.bridge.LlamaBridge
-import kotlinx.coroutines.*
-import kotlinx.coroutines.flow.*
+import com.tryptz.neuron.inference.core.NeuronCore
+import com.tryptz.neuron.core.Backend as CoreBackend
+import com.tryptz.neuron.core.BackendRequest
+import com.tryptz.neuron.core.ChatTemplate as CoreChatTemplate
+import com.tryptz.neuron.core.GenerationRequest
+import com.tryptz.neuron.core.KvCacheQuant
+import com.tryptz.neuron.core.LoadReport
+import com.tryptz.neuron.core.Message as CoreMessage
+import com.tryptz.neuron.core.ModelConfig
+import com.tryptz.neuron.core.NeuronException
+import com.tryptz.neuron.core.ReasoningEffort as CoreReasoningEffort
+import com.tryptz.neuron.core.Role as CoreRole
+import com.tryptz.neuron.core.SamplingParams
+import com.tryptz.neuron.core.StopReason
+import com.tryptz.neuron.core.ThermalPolicy as CoreThermalPolicy
+import com.tryptz.neuron.core.TokenSink
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.ProducerScope
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -19,6 +44,12 @@ interface InferenceEngine {
     val telemetry: StateFlow<DeviceTelemetry>
     val isModelLoaded: Boolean
     val loadedModel: ModelDescriptor?
+
+    /** Backend the loaded model actually runs on (may differ from the request). */
+    val loadedBackend: InferenceBackend?
+
+    /** Backends that have a live ggml device on this phone. */
+    suspend fun availableBackends(): List<InferenceBackend>
 
     suspend fun loadModel(
         descriptor: ModelDescriptor,
@@ -36,27 +67,43 @@ interface InferenceEngine {
     suspend fun unloadModel()
 }
 
+/** What is loaded right now, as reported by the Rust core. */
+private data class LoadedModelState(
+    val descriptor: ModelDescriptor,
+    val backend: InferenceBackend,
+    val report: LoadReport
+)
+
+/**
+ * Kotlin façade over the Rust core (`libneuron.so`). Prompt formatting,
+ * sampling, thermal throttling, backend selection and decoding all happen in
+ * Rust; this class maps domain types, owns coroutine plumbing, and keeps the
+ * telemetry flow the UI observes.
+ */
 @Singleton
-class InferenceEngineImpl @Inject constructor() : InferenceEngine {
+class InferenceEngineImpl @Inject constructor(
+    private val core: NeuronCore
+) : InferenceEngine {
 
     /**
-     * Serializes [loadModel] and [unloadModel] so a concurrent model switch
-     * cannot leak a multi-GB native mmap or unload a model mid-load.
-     * NOTE: Mutex is non-reentrant — loadModel must call [unloadLocked], never [unloadModel].
+     * Serializes load/unload/generate so a model switch cannot free a context
+     * while a decode is in flight. Non-reentrant: loadModel uses [unloadLocked].
      */
     private val modelLock = Mutex()
 
-    private var currentModel: ModelHandle? = null
-
-    /** Read by [cancelGeneration] from another thread; mutated by [generateStream]. */
     @Volatile
-    private var activeCompletionHandle: Long = NO_COMPLETION
+    private var current: LoadedModelState? = null
 
     private val _telemetry = MutableStateFlow(DeviceTelemetry())
     override val telemetry: StateFlow<DeviceTelemetry> = _telemetry.asStateFlow()
 
-    override val isModelLoaded: Boolean get() = currentModel != null
-    override val loadedModel: ModelDescriptor? get() = currentModel?.descriptor
+    override val isModelLoaded: Boolean get() = current != null
+    override val loadedModel: ModelDescriptor? get() = current?.descriptor
+    override val loadedBackend: InferenceBackend? get() = current?.backend
+
+    override suspend fun availableBackends(): List<InferenceBackend> = withContext(Dispatchers.IO) {
+        core.engine().availableBackends().map { it.toDomain() }
+    }
 
     override suspend fun loadModel(
         descriptor: ModelDescriptor,
@@ -65,41 +112,38 @@ class InferenceEngineImpl @Inject constructor() : InferenceEngine {
     ): Result<Unit> = modelLock.withLock {
         withContext(Dispatchers.IO) {
             runCatching {
-                LlamaBridge.ensureLoaded()
-                // Hold the lock once: unload the previous model inline rather than
-                // calling the public unloadModel() (which would re-enter the mutex).
+                val engine = core.engine()
                 unloadLocked()
 
-                // Battery Saver forces CPU + small batch regardless of user
-                // backend choice — saves the most power, accepts slower decode.
-                val backend = when {
-                    settings.batterySaver -> InferenceBackend.CPU
-                    settings.backend == InferenceBackend.AUTO -> BackendResolver.resolve(descriptor)
-                    else -> settings.backend
+                // Battery Saver forces the CPU regardless of the user's choice:
+                // lowest power draw, accepts slower decode.
+                val request = when {
+                    settings.batterySaver -> BackendRequest.CPU
+                    else -> settings.backend.toRequest()
                 }
-                if (settings.batterySaver) {
-                    Timber.i("[op=battery_saver_active] forcing backend=CPU")
-                }
+                if (settings.batterySaver) Timber.i("[op=battery_saver_active] forcing backend=CPU")
 
-                // NPU (QNN) isn't wired into this llama.cpp build — inference
-                // would run on CPU regardless, so record the backend truthfully
-                // instead of telling the UI it's on the NPU.
-                val effectiveBackend =
-                    if (backend == InferenceBackend.NPU) InferenceBackend.CPU else backend
-
-                val handle = LlamaBridge.loadModel(
-                    modelPath = modelPath,
-                    contextLength = settings.contextLength.coerceAtMost(descriptor.maxContext),
-                    batchSize = settings.batchSize,
-                    threadCount = if (settings.threadCount == 0) BackendResolver.resolveThreadCount() else settings.threadCount,
-                    gpuLayers = if (effectiveBackend == InferenceBackend.GPU) GPU_LAYERS_ALL else GPU_LAYERS_NONE,
-                    useVulkan = effectiveBackend == InferenceBackend.GPU,
-                    kvCacheTypeQuant = kvCacheTypeFor(settings.kvCacheQuant)
+                val config = ModelConfig(
+                    path = modelPath,
+                    contextLength = settings.contextLength.coerceAtMost(descriptor.maxContext).toUInt(),
+                    batchSize = settings.batchSize.toUInt(),
+                    threads = settings.threadCount.coerceAtLeast(0).toUInt(),
+                    backend = request,
+                    kvCache = settings.kvCacheQuant.toKvCache(),
+                    modelRamMb = descriptor.ramRequiredMb.toUInt(),
+                    useMmap = true
                 )
-
-                require(handle != 0L) { "Failed to load model: ${descriptor.name}" }
-                currentModel = ModelHandle(handle, descriptor, effectiveBackend)
-                Timber.i("Model loaded: ${descriptor.name} on $effectiveBackend")
+                val report = engine.loadModel(config)
+                val backend = report.backend.toDomain()
+                current = LoadedModelState(descriptor, backend, report)
+                _telemetry.value = DeviceTelemetry()
+                Timber.i(
+                    "[op=model_loaded] name=\"${descriptor.name}\" backend=$backend " +
+                        "device=${report.deviceName} reason=\"${report.backendReason}\" " +
+                        "n_ctx=${report.nCtx} layers=${report.nLayer} ms=${report.loadMs}"
+                )
+            }.recoverCatching { e ->
+                throw IllegalStateException(e.toUserMessage(descriptor), e)
             }
         }
     }
@@ -107,133 +151,191 @@ class InferenceEngineImpl @Inject constructor() : InferenceEngine {
     override fun generateStream(
         messages: List<ChatMessage>,
         settings: InferenceSettings
-    ): Flow<InferenceEvent> = flow {
-        // Hold modelLock for the whole stream: unloadModel/loadModel must not
-        // free the native context while getNextToken is inside llama_decode.
-        // cancelGeneration() doesn't take the lock, so a cancel still unblocks
-        // the loop promptly and releases the lock via the flow's completion.
+    ): Flow<InferenceEvent> = channelFlow {
+        // Hold modelLock for the whole stream: a concurrent unload must wait
+        // until the Rust generate() call returns. cancelGeneration() does not
+        // take the lock, so cancel still unblocks the loop promptly.
         modelLock.withLock { generateLocked(messages, settings) }
-    }.flowOn(Dispatchers.IO)
+    }
+        // Unbounded: the Rust decode loop calls back on this thread and must never
+        // block on a full buffer while the UI thread drains tokens.
+        .buffer(Channel.UNLIMITED)
+        .flowOn(Dispatchers.IO)
 
-    private suspend fun FlowCollector<InferenceEvent>.generateLocked(
+    private suspend fun ProducerScope<InferenceEvent>.generateLocked(
         messages: List<ChatMessage>,
         settings: InferenceSettings
     ) {
-        val model = currentModel ?: run {
-            emit(InferenceEvent.Error("No model loaded")); return
-        }
+        val model = current ?: run { send(InferenceEvent.Error("No model loaded")); return }
+        val engine = core.engine()
 
-        val prompt = PromptFormatter.format(messages, model.descriptor, settings)
-        Timber.i("[op=inference_start] model=\"${model.descriptor.name}\" messages=${messages.size} prompt_len=${prompt.length} temp=${settings.temperature} top_k=${settings.topK} top_p=${settings.topP}")
-        emit(InferenceEvent.Started)
-
-        val completionHandle = LlamaBridge.startCompletion(
-            handle = model.nativeHandle, prompt = prompt,
-            temperature = settings.temperature, topP = settings.topP,
-            topK = settings.topK, minP = settings.minP,
-            repeatPenalty = settings.repeatPenalty,
-            maxTokens = settings.contextLength
+        val request = GenerationRequest(
+            messages = messages.map { CoreMessage(it.role.toCore(), it.content) },
+            systemPrompt = settings.systemPrompt,
+            template = model.descriptor.chatTemplate.toCore(),
+            reasoning = settings.reasoningEffort.toCore(),
+            reasoningCapable = model.descriptor.capabilities.reasoning,
+            sampling = SamplingParams(
+                temperature = settings.temperature,
+                topP = settings.topP,
+                topK = settings.topK,
+                minP = settings.minP,
+                repeatPenalty = settings.repeatPenalty,
+                penaltyLastN = 64,
+                seed = null
+            ),
+            maxTokens = 0u, // bounded by the context window
+            thermalPolicy = settings.thermalPolicy.toCore(),
+            tokSecCap = effectiveTokSecCap(settings).toUInt()
         )
-        // 0 means the native side failed (tokenization/decode error, prompt too
-        // long for the context…) — surface it instead of streaming nothing.
-        if (completionHandle == NO_COMPLETION) {
-            emit(InferenceEvent.Error("Failed to start generation (prompt may exceed the context window)"))
-            return
-        }
-        activeCompletionHandle = completionHandle
+        Timber.i(
+            "[op=inference_start] model=\"${model.descriptor.name}\" backend=${model.backend} " +
+                "messages=${messages.size} temp=${settings.temperature} top_k=${settings.topK} top_p=${settings.topP}"
+        )
+        send(InferenceEvent.Started)
 
-        try {
-            var inThinking = false
-            while (currentCoroutineContext().isActive) {
-                val token = LlamaBridge.getNextToken(completionHandle) ?: break
-
-                var thinkingHandled = false
+        // The Rust side streams through this callback on the calling (IO) thread.
+        // <think> handling stays here: it is a presentation concern.
+        val sink = object : TokenSink {
+            private var inThinking = false
+            override fun onToken(text: String, tokSec: Float): Boolean {
+                if (!isActive) return false
+                var handled = false
                 if (model.descriptor.capabilities.reasoning) {
                     when {
-                        token.contains("<think>") -> { inThinking = true; thinkingHandled = true }
-                        token.contains("</think>") -> { inThinking = false; thinkingHandled = true }
-                        inThinking -> { emit(InferenceEvent.ThinkingToken(token)); thinkingHandled = true }
+                        text.contains("<think>") -> { inThinking = true; handled = true }
+                        text.contains("</think>") -> { inThinking = false; handled = true }
+                        inThinking -> { trySend(InferenceEvent.ThinkingToken(text)); handled = true }
                     }
                 }
-
-                val tokSec = LlamaBridge.getLastTokensPerSec()
-                if (!thinkingHandled) {
-                    emit(InferenceEvent.Token(token, tokSec))
-                }
-
-                // Telemetry + throttling run for EVERY token, including the
-                // thinking phase — that's often the most compute-intense stretch.
-                // Sub-zero temps mean the sensor is unreadable, not cold silicon.
-                val cpuTemp = LlamaBridge.getCpuTemperature().takeIf { it > 0f }
-                _telemetry.value = _telemetry.value.copy(
-                    currentTokSec = tokSec,
-                    ramUsedMb = LlamaBridge.getModelRamUsageMb(model.nativeHandle),
-                    cpuTempCelsius = cpuTemp,
-                    thermalState = cpuTemp?.let { ThermalManager.classify(it) }
-                        ?: _telemetry.value.thermalState
-                )
-
-                cpuTemp?.let { ThermalManager.applyThrottling(settings.thermalPolicy, it) }
-                // Battery saver clamps to 20 tok/s if user hasn't set a tighter cap.
-                val effectiveCap = when {
-                    settings.batterySaver && (settings.maxTokSecCap == 0 || settings.maxTokSecCap > 20) -> 20
-                    else -> settings.maxTokSecCap
-                }
-                ThermalManager.applyTokSecCap(tokSec, effectiveCap)
+                if (!handled) trySend(InferenceEvent.Token(text, tokSec))
+                publishTelemetry(engine.telemetry())
+                return isActive
             }
-            Timber.i("[op=inference_complete] final_tok_sec=${LlamaBridge.getLastTokensPerSec()}")
-            emit(InferenceEvent.Completed)
+        }
+
+        try {
+            val summary = engine.generate(request, sink)
+            Timber.i(
+                "[op=inference_complete] tokens=${summary.tokens} prompt_tokens=${summary.promptTokens} " +
+                    "avg_tok_sec=${summary.avgTokSec} ms=${summary.elapsedMs} stop=${summary.stop}"
+            )
+            when (summary.stop) {
+                StopReason.CANCELLED, StopReason.SINK_STOPPED -> Timber.i("[op=inference_cancelled]")
+                else -> {}
+            }
+            send(InferenceEvent.Completed)
         } catch (e: CancellationException) {
             Timber.i("[op=inference_cancelled]")
-            LlamaBridge.cancelCompletion(completionHandle); throw e
+            engine.cancel()
+            throw e
+        } catch (e: NeuronException) {
+            Timber.e(e, "[op=inference_error] err=${e.message}")
+            send(InferenceEvent.Error(e.message ?: "Inference error"))
         } catch (e: Exception) {
             Timber.e(e, "[op=inference_error] err=${e.message}")
-            emit(InferenceEvent.Error(e.message ?: "Inference error"))
-        } finally {
-            activeCompletionHandle = NO_COMPLETION
-            LlamaBridge.freeCompletion(completionHandle)
+            send(InferenceEvent.Error(e.message ?: "Inference error"))
         }
     }
 
+    /**
+     * RAM/battery come from DeviceMonitor; the engine contributes what only it
+     * knows: decode speed, SoC temperature as sampled in the decode loop, and
+     * the derived thermal state.
+     */
+    private fun publishTelemetry(t: com.tryptz.neuron.core.Telemetry) {
+        _telemetry.value = _telemetry.value.copy(
+            currentTokSec = t.tokSec,
+            cpuTempCelsius = t.cpuTempC,
+            thermalState = t.thermalState.toDomain()
+        )
+    }
+
     override fun cancelGeneration() {
-        // Snapshot the volatile once so the check and the call see the same handle.
-        val handle = activeCompletionHandle
-        if (handle != NO_COMPLETION) LlamaBridge.cancelCompletion(handle)
+        // Lock-free on the Rust side: safe to call from any thread at any time.
+        runCatching { core.engine().cancel() }
     }
 
     override suspend fun unloadModel() = modelLock.withLock {
         withContext(Dispatchers.IO) { unloadLocked() }
     }
 
-    /** Actual unload work. Caller MUST hold [modelLock]. */
+    /** Caller MUST hold [modelLock]. */
     private fun unloadLocked() {
-        currentModel?.let {
-            LlamaBridge.unloadModel(it.nativeHandle)
-            currentModel = null
+        if (current != null) {
+            core.engine().unloadModel()
+            current = null
+            _telemetry.value = DeviceTelemetry()
+            Timber.i("[op=model_unloaded]")
         }
     }
 
-    companion object {
-        /** Sentinel for "no active completion" native handle. */
-        private const val NO_COMPLETION = 0L
-
-        /** Offload all transformer layers to the GPU (llama.cpp treats large values as "all"). */
-        const val GPU_LAYERS_ALL = 999
-
-        /** Keep all layers on the CPU. */
-        const val GPU_LAYERS_NONE = 0
-
-        // KV-cache quantization codes expected by the native bridge.
-        private const val KV_CACHE_FP16 = 0
-        private const val KV_CACHE_Q8_0 = 1
-        private const val KV_CACHE_Q4_0 = 2
-
-        /** Maps a [Quantization] choice to the native KV-cache type code. */
-        fun kvCacheTypeFor(quant: Quantization): Int = when (quant) {
-            Quantization.FP16 -> KV_CACHE_FP16
-            Quantization.Q8_0 -> KV_CACHE_Q8_0
-            Quantization.Q4_0 -> KV_CACHE_Q4_0
-            else -> KV_CACHE_Q8_0
-        }
+    private fun effectiveTokSecCap(settings: InferenceSettings): Int = when {
+        // Battery saver clamps to 20 tok/s unless the user set a tighter cap.
+        settings.batterySaver && (settings.maxTokSecCap == 0 || settings.maxTokSecCap > 20) -> 20
+        else -> settings.maxTokSecCap
     }
+
+    private fun Throwable.toUserMessage(descriptor: ModelDescriptor): String = when (this) {
+        is NeuronException.ModelNotFound -> "Model file for ${descriptor.name} is missing. Re-download it."
+        is NeuronException.ModelLoad -> "Failed to load ${descriptor.name}: ${message.orEmpty()}"
+        is NeuronException.BackendUnavailable -> "Inference backend unavailable: ${message.orEmpty()}"
+        is NeuronException -> message ?: "Failed to load ${descriptor.name}"
+        else -> message ?: "Failed to load ${descriptor.name}"
+    }
+}
+
+// ───────────────────────── domain ⇄ core mapping ─────────────────────────
+
+internal fun InferenceBackend.toRequest(): BackendRequest = when (this) {
+    InferenceBackend.NPU -> BackendRequest.HEXAGON_NPU
+    InferenceBackend.GPU -> BackendRequest.ADRENO_GPU
+    InferenceBackend.CPU -> BackendRequest.CPU
+    InferenceBackend.AUTO -> BackendRequest.AUTO
+}
+
+internal fun CoreBackend.toDomain(): InferenceBackend = when (this) {
+    CoreBackend.HEXAGON_NPU -> InferenceBackend.NPU
+    CoreBackend.ADRENO_GPU -> InferenceBackend.GPU
+    CoreBackend.CPU -> InferenceBackend.CPU
+}
+
+internal fun Quantization.toKvCache(): KvCacheQuant = when (this) {
+    Quantization.Q4_0, Quantization.INT4, Quantization.INT2 -> KvCacheQuant.Q4_0
+    Quantization.FP16 -> KvCacheQuant.F16
+    else -> KvCacheQuant.Q8_0
+}
+
+internal fun ChatTemplate.toCore(): CoreChatTemplate = when (this) {
+    ChatTemplate.CHATML -> CoreChatTemplate.CHAT_ML
+    ChatTemplate.LLAMA3 -> CoreChatTemplate.LLAMA3
+    ChatTemplate.GEMMA -> CoreChatTemplate.GEMMA
+    ChatTemplate.PHI -> CoreChatTemplate.PHI
+    ChatTemplate.MISTRAL -> CoreChatTemplate.MISTRAL
+}
+
+internal fun MessageRole.toCore(): CoreRole = when (this) {
+    MessageRole.SYSTEM -> CoreRole.SYSTEM
+    MessageRole.USER -> CoreRole.USER
+    MessageRole.ASSISTANT -> CoreRole.ASSISTANT
+}
+
+internal fun ReasoningEffort.toCore(): CoreReasoningEffort = when (this) {
+    ReasoningEffort.NONE -> CoreReasoningEffort.NONE
+    ReasoningEffort.LOW -> CoreReasoningEffort.LOW
+    ReasoningEffort.MEDIUM -> CoreReasoningEffort.MEDIUM
+    ReasoningEffort.HIGH -> CoreReasoningEffort.HIGH
+}
+
+internal fun ThermalPolicy.toCore(): CoreThermalPolicy = when (this) {
+    ThermalPolicy.PAUSE -> CoreThermalPolicy.PAUSE
+    ThermalPolicy.SLOW_DOWN -> CoreThermalPolicy.SLOW_DOWN
+    ThermalPolicy.IGNORE -> CoreThermalPolicy.IGNORE
+}
+
+internal fun com.tryptz.neuron.core.ThermalState.toDomain(): ThermalState = when (this) {
+    com.tryptz.neuron.core.ThermalState.NOMINAL -> ThermalState.NOMINAL
+    com.tryptz.neuron.core.ThermalState.WARM -> ThermalState.WARM
+    com.tryptz.neuron.core.ThermalState.HOT -> ThermalState.HOT
+    com.tryptz.neuron.core.ThermalState.CRITICAL -> ThermalState.CRITICAL
 }

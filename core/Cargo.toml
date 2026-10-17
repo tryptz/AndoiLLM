@@ -1,0 +1,44 @@
+[workspace]
+resolver = "2"
+members = [
+  "crates/neuron-core",
+  "crates/neuron-sandbox",
+  "crates/neuron-ffi",
+  "crates/uniffi-bindgen",
+]
+
+[workspace.package]
+version = "1.0.0"
+edition = "2021"
+rust-version = "1.85"
+license = "LicenseRef-Proprietary"
+authors = ["tryptz"]
+repository = "https://github.com/tryptz/AndoiLLM"
+
+[workspace.dependencies]
+# Inference: safe Rust wrapper over llama.cpp. 0.1.160 bundles a llama.cpp that
+# ships the Qualcomm Hexagon (HTP) and Adreno OpenCL ggml backends.
+llama-cpp-2 = { version = "0.1.160", default-features = false }
+llama-cpp-sys-2 = { version = "0.1.160", default-features = false }
+# JS sandbox: QuickJS compiled from source and driven from Rust.
+rquickjs = { version = "0.14", default-features = false }
+# Kotlin bindings.
+uniffi = { version = "0.32" }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "std"] }
+parking_lot = "0.12"
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+panic = "unwind"
+strip = "debuginfo"
+
+[profile.dev.package."*"]
+opt-level = 1

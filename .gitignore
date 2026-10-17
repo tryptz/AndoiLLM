@@ -48,6 +48,14 @@ hs_err_pid*
 replay_pid*
 *.hprof
 
-# Project-specific ignored JNI directories
-app/src/main/jni/llama_cpp/
-app/src/main/jni/quickjs/
+# Rust core build output
+core/target/
+core/third_party/opencl-android/
+
+# Release signing material — never committed. See README "Signing".
+keystore.properties
+*.jks
+*.keystore
+
+# Build artifacts are published from CI, not from git
+*.apk

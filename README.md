@@ -1,184 +1,185 @@
 # Neuron — On-Device LLM for Android
 
-Private, local AI inference running entirely on-device. Optimized for
-Snapdragon 8 Elite Gen 5 (OnePlus 15) with Hexagon NPU, Adreno GPU,
-and Oryon CPU backends.
+Private, local AI inference running entirely on-device, with a Rust core.
+Optimized for the Snapdragon 8 Elite Gen 5 (OnePlus 15): Hexagon HTP v81
+NPU, Adreno 840 GPU, and Oryon CPU backends.
 
-## Architecture
+## What changed in 1.0
 
-Neuron is a native Android application built with Kotlin and Jetpack
-Compose, architected around three pillars: a multi-backend inference
-engine, a sandboxed code execution environment, and a flagship-tier
-animation system.
+Six months after the first cut, Neuron was rebuilt from the ground up around
+a Rust inference core and the current Snapdragon driver stack in llama.cpp:
 
-**Inference** flows through a JNI bridge (`LlamaBridge`) to a compiled
-llama.cpp library, supporting three backends ranked by priority: Hexagon
-NPU via Qualcomm QNN for maximum tok/sec and battery efficiency, Adreno
-GPU via Vulkan compute for larger models, and CPU with NEON SIMD as a
-universal fallback. The `InferenceEngine` class orchestrates model loading,
-prompt formatting (supporting chatml, llama3, gemma, phi, and mistral
-templates), streaming token generation with thermal throttling, and
-battery-aware tok/sec capping. Model selection is driven by a curated
-`ModelRegistry` with per-model, per-backend performance estimates
-calibrated for the Snapdragon 8 Elite Gen 5.
+| | 0.1 (C++ JNI) | 1.0 (Rust core) |
+|---|---|---|
+| Native layer | two hand-written JNI files, integer handles | `core/` Rust workspace, UniFFI-generated Kotlin bindings |
+| NPU | planned via QNN, never wired | upstream `ggml-hexagon` backend (Hexagon SDK 6.6, HTP v73–v81) |
+| GPU | Vulkan compute | `ggml-opencl` with Adreno 840 verified upstream |
+| Backend loading | compiled in | each backend is a dlopen'ed module; a missing driver degrades, never crashes |
+| JS sandbox | QuickJS via JNI | QuickJS via `rquickjs`, memory + deadline limits, host-tested |
+| Prompt templates, thermal policy, backend policy | Kotlin | Rust, unit-tested on the host |
+| llama.cpp | git clone into `jni/` | pinned through `llama-cpp-2` 0.1.160 |
 
-**Code execution** embeds QuickJS (JavaScript) via a second native library
-(`neuron_quickjs`), with Python support planned through Chaquopy and shell
-via Android's `/system/bin/sh`. All code runs in isolated contexts with
-enforced memory limits (default 64MB), execution timeouts (default 10s),
-and a security sandbox that blocks filesystem, network, and system access.
-The LLM's code output is automatically parsed, rendered with syntax
-highlighting, and paired with "Run" buttons that display stdout, stderr,
-return values, and timing in an animated output panel.
+The full design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-**Progressive disclosure** ensures the app feels like a messaging app on
-first launch—just a chat input, a model selector, and a send button—while
-hiding a full DSP-grade parameter surface (backend override, NPU precision,
-KV-cache quantization, thread pinning, thermal policy) behind three
-expanding settings tiers: Basic → Advanced → Expert. The animation system
-is centralized through `MotionTokens`, defining spring configs (GENTLE,
-RESPONSIVE, SNAPPY, BOUNCY) and tween curves (EMPHASIZED, DECELERATE,
-ACCELERATE) that target the 165Hz LTPO display.
+## Architecture in brief
 
-## Project Structure
+Kotlin + Jetpack Compose draws the UI and persists conversations (Room,
+DataStore, WorkManager downloads). Everything that touches the model lives in
+`core/`:
+
+- **neuron-core** — the engine. Loads a GGUF, builds a llama.cpp context on the
+  chosen backend, streams tokens with cancellation, applies thermal throttling
+  and tok/s caps per token, exposes telemetry. Pure modules (backend policy,
+  SoC table, GGUF reader, chat templates, thermal thresholds, sampling) are
+  tested with `cargo test` on any machine.
+- **neuron-sandbox** — QuickJS sandbox for model-written JavaScript.
+- **neuron-ffi** — the UniFFI surface compiled to `libneuron.so`; Kotlin sees
+  `com.tryptz.neuron.core.NeuronEngine` plus plain records and enums.
+
+Backend selection is automatic (`Auto` prefers NPU → GPU → CPU, keeping models
+over 4 GB off the NPU) or explicit from the Expert settings tier; the engine
+reports the backend it actually used and why.
+
+## Project structure
 
 ```
-NeuronApp/
-├── build.gradle.kts                    # Root build config
-├── settings.gradle.kts
-├── gradle.properties
-├── compose_stability.conf              # Compose compiler stability hints
-├── gradle/libs.versions.toml           # Version catalog
+AndoiLLM/
+├── core/                              # Rust workspace (see docs/ARCHITECTURE.md)
+│   ├── crates/neuron-core             # engine + pure modules
+│   ├── crates/neuron-sandbox          # QuickJS sandbox
+│   ├── crates/neuron-ffi              # UniFFI → libneuron.so
+│   ├── crates/uniffi-bindgen          # Kotlin binding generator
+│   ├── cmake/snapdragon.cmake         # Hexagon SDK + Oryon flags into llama.cpp's CMake
+│   └── scripts/                       # build-android.sh, setup-opencl-android.sh
 ├── app/
-│   ├── build.gradle.kts                # App module with NDK + Compose
-│   ├── proguard-rules.pro
+│   ├── build.gradle.kts               # drives cargo ndk + UniFFI before compiling Kotlin
 │   └── src/main/
-│       ├── AndroidManifest.xml
-│       ├── res/values/{strings,themes}.xml
-│       ├── jni/
-│       │   ├── CMakeLists.txt          # Native build: llama.cpp + QuickJS
-│       │   ├── neuron_inference_jni.cpp # LLM inference JNI bridge
-│       │   ├── neuron_quickjs_jni.cpp   # JS execution JNI bridge
-│       │   ├── llama_cpp/              # ← clone llama.cpp here
-│       │   └── quickjs/                # ← clone QuickJS here
+│       ├── assets/htp/                # libggml-htp-vNN.so (Hexagon DSP skels)
 │       └── java/com/tryptz/neuron/
-│           ├── NeuronApp.kt            # Application + WorkManager
-│           ├── MainActivity.kt         # Entry point
-│           ├── di/
-│           │   └── AppModule.kt        # Hilt: Room, Ktor, DAOs
-│           ├── domain/model/
-│           │   └── Models.kt           # All domain types (@Immutable)
-│           ├── data/
-│           │   ├── local/
-│           │   │   ├── NeuronDatabase.kt
-│           │   │   ├── dao/            # ConversationDao, MessageDao,
-│           │   │   │                   # InstalledModelDao, CodeSnippetDao
-│           │   │   ├── entity/Entities.kt
-│           │   │   └── datastore/SettingsDataStore.kt
-│           │   ├── repository/
-│           │   │   ├── ConversationRepository.kt
-│           │   │   └── ModelRepository.kt
-│           │   └── model/
-│           │       └── ModelRegistry.kt # Curated model catalog
-│           ├── inference/
-│           │   ├── bridge/LlamaBridge.kt # JNI declarations
-│           │   └── backend/InferenceEngine.kt # Multi-backend orchestrator
-│           ├── code/
-│           │   ├── engine/QuickJSBridge.kt # JNI declarations
-│           │   └── sandbox/CodeExecutor.kt # Sandboxed JS/Py/Bash runner
-│           ├── download/
-│           │   └── ModelDownloadWorker.kt  # WorkManager + HF downloads
-│           ├── service/
-│           │   └── InferenceService.kt     # Foreground service + wake lock
-│           ├── util/
-│           │   ├── DeviceMonitor.kt    # RAM, thermal, battery telemetry
-│           │   └── Extensions.kt       # formatBytes, extractCodeBlocks
-│           └── ui/
-│               ├── NeuronNavHost.kt    # Navigation with animated transitions
-│               ├── animation/
-│               │   ├── MotionTokens.kt        # Central animation design system
-│               │   └── AnimatedComponents.kt   # TypingIndicator, ThermalDot, etc.
-│               ├── theme/
-│               │   ├── Theme.kt        # OLED-optimized dark + Material You
-│               │   └── Type.kt         # Typography scale
-│               ├── chat/
-│               │   ├── ChatScreen.kt   # Main chat UI
-│               │   ├── components/
-│               │   │   ├── ChatBubble.kt       # Message bubbles + code blocks
-│               │   │   ├── StreamingBubble.kt   # Streaming response with thinking
-│               │   │   └── ModelSelectorSheet.kt # Bottom sheet model picker
-│               │   └── viewmodel/
-│               │       └── ChatViewModel.kt     # Chat state + inference orchestration
-│               ├── settings/
-│               │   └── SettingsPanel.kt  # Progressive disclosure settings
-│               ├── modelmanager/
-│               │   ├── ModelManagerScreen.kt
-│               │   └── viewmodel/ModelManagerViewModel.kt
-│               └── editor/
-│                   └── CodeEditorScreen.kt # Full editor with undo/redo/zoom
+│           ├── inference/core/NeuronCore.kt        # owns the NeuronEngine, stages HTP skel
+│           ├── inference/backend/InferenceEngine.kt # Kotlin façade over the core
+│           ├── code/sandbox/CodeExecutor.kt        # JS via core sandbox; bash gated
+│           ├── data/, domain/, ui/                  # unchanged app layers
+│           └── ...
+└── docs/ARCHITECTURE.md
 ```
 
-## Build Instructions
+## Build
 
 ### Prerequisites
 
-- Android Studio Ladybug (2024.2.2) or later
-- JDK 17+
-- Android SDK 36
-- NDK r27+ (install via SDK Manager → SDK Tools → NDK)
-- CMake 3.22.1+ (install via SDK Manager → SDK Tools → CMake)
+- JDK 17+, Android SDK 36, NDK r29 (`29.0.14206865`), CMake 3.22+, Ninja
+- Rust stable (1.85+) with `rustup target add aarch64-linux-android`
+- `cargo install cargo-ndk`
+- libclang (for bindgen; `apt install libclang-dev` / Xcode CLT)
 
-### Setup Native Dependencies
+### One-time: OpenCL link stubs for the Adreno backend
 
 ```bash
-cd app/src/main/jni
-
-# Clone llama.cpp
-git clone --depth 1 https://github.com/ggml-org/llama.cpp.git llama_cpp
-
-# Clone QuickJS (official Bellard repo — the CMake build expects its
-# post-2024 layout: dtoa.c instead of libbf.c)
-git clone --depth 1 https://github.com/bellard/quickjs.git quickjs
+ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/29.0.14206865 core/scripts/setup-opencl-android.sh
 ```
 
-### Build
+This clones the Khronos OpenCL headers and ICD loader and builds them for
+arm64 into `core/third_party/opencl-android/`. They are link-time stand-ins
+only: on the phone, `libggml-opencl.so` resolves to Qualcomm's driver in
+`/vendor/lib64`.
+
+### Build the app
 
 ```bash
-# From project root
 ./gradlew assembleDebug
-
-# Install on device
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-The first build will compile llama.cpp and QuickJS for arm64-v8a,
-which takes 5-10 minutes. Subsequent builds are incremental.
+Gradle runs `cargo ndk` for arm64-v8a, collects `libllama`, `libggml*` and the
+backend modules into `jniLibs`, and generates the Kotlin bindings. The first
+build compiles llama.cpp (several minutes); later builds are incremental.
 
-### Sideloading Models
+Useful flags:
 
-Models are downloaded within the app from Hugging Face. For manual
-sideloading:
+| | |
+|---|---|
+| `./gradlew assembleDebug -PrustDebug` | Rust debug profile (faster compile, slower inference) |
+| `cd core && cargo test` | host tests, including the engine against a host llama.cpp build |
+| `cd core && cargo test -p neuron-core --no-default-features -p neuron-sandbox` | pure-Rust tests only, no llama.cpp compile |
+| `core/scripts/build-android.sh` | the same steps Gradle runs, for CI and containers |
+
+### Hexagon NPU backend
+
+`libggml-hexagon.so` and the DSP-side skels (`libggml-htp-v81.so` for the
+8 Elite Gen 5) need the Hexagon SDK, which Qualcomm ships only inside the
+Snapdragon toolchain image used by llama.cpp:
 
 ```bash
-# Download a GGUF model
-wget https://huggingface.co/bartowski/Llama-3.2-3B-Instruct-GGUF/resolve/main/Llama-3.2-3B-Instruct-Q4_K_M.gguf
-
-# Push to the app's models directory
-adb push Llama-3.2-3B-Instruct-Q4_K_M.gguf /data/data/com.tryptz.neuron/files/models/
-
-# The app will detect sideloaded models on next launch if you
-# register them in the installed_models database table.
+docker run --rm -it -v "$PWD":/workspace -w /workspace \
+  ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
+  bash -c 'HEXAGON_SDK_ROOT=/opt/hexagon/6.6.0.0 ANDROID_NDK_ROOT=/opt/android-ndk-r28b \
+           OPENCL_SDK_ROOT=/opt/OpenCL-SDK core/scripts/build-android.sh --out core/target/android-jniLibs'
+cp core/target/android-jniLibs/htp/libggml-htp-v81.so app/src/main/assets/htp/
 ```
 
-## Performance Targets (OnePlus 15)
+Then `./gradlew assembleDebug` with `HEXAGON_SDK_ROOT` set, or drop the
+`arm64-v8a/*.so` from that output into `app/build/rustJniLibs/arm64-v8a/`.
+The `hexagon` CI job does this on every push and uploads the libraries as an
+artifact. Without them the engine lists no HTP device and uses the GPU or CPU.
+
+Hexagon knobs are environment variables read by the backend; the app sets the
+important ones (`ADSP_LIBRARY_PATH`/`DSP_LIBRARY_PATH` to the skel directory,
+optionally `GGML_HEXAGON_POWER_MODE`). `GGML_HEXAGON_VERBOSE=1` and
+`GGML_HEXAGON_PROFILE=1` are available for debugging on a rooted shell.
+
+### Signing
+
+Release builds read `keystore.properties` at the project root:
+
+```
+storeFile=neuron-release.jks
+storePassword=...
+keyAlias=neuron
+keyPassword=...
+```
+
+Both the properties file and `*.jks` are git-ignored. Keep the keystore and
+its passwords in a password manager: an app update must be signed with the
+same key or Android refuses to install it over the previous version.
+
+### Sideloading models
+
+Models download inside the app from Hugging Face. To sideload:
+
+```bash
+adb push Llama-3.2-3B-Instruct-Q4_K_M.gguf /data/data/com.tryptz.neuron/files/models/
+```
+
+The Model Manager also imports any GGUF from device storage and reads its
+header (architecture, context length, quantization, chat template) to fill in
+the settings.
+
+## Logging
+
+```bash
+adb logcat -s NeuronCore Neuron.*
+```
+
+`NeuronCore` carries the Rust core and llama.cpp's own diagnostics (model load
+reasons, backend devices found, Hexagon session messages); `Neuron.*` is the
+Kotlin side.
+
+## Performance targets (OnePlus 15)
+
+Estimates for the shipped model registry; measure with `[op=inference_complete]`
+log lines, which report average tok/s per generation.
 
 | Model | Backend | Quant | tok/sec | RAM |
 |---|---|---|---|---|
-| Gemma 4 E2B | NPU | INT4 | 150-220 | ~3 GB |
-| Llama 3.2 3B | NPU | INT4 | 120-180 | ~2.2 GB |
-| Phi-4 Mini | NPU | INT4 | 100-150 | ~2.5 GB |
-| Qwen 2.5 7B | GPU | Q4_K_M | 20-35 | ~5.2 GB |
-| Gemma 4 E4B | NPU | INT4 | 100-150 | ~4.5 GB |
+| Llama 3.2 1B | NPU (HTP v81) | Q4_0 | 150–220 | ~1.1 GB |
+| Llama 3.2 3B | NPU (HTP v81) | Q4_0 | 60–90 | ~2.5 GB |
+| Gemma 3 4B IT | GPU (OpenCL) | Q4_K_M | 25–45 | ~3.5 GB |
+| Qwen 3 8B | GPU (OpenCL) | Q4_K_M | 18–30 | ~5.6 GB |
+| Qwen 2.5 7B | GPU (OpenCL) | Q4_K_M | 20–32 | ~5.4 GB |
+
+The Hexagon backend is optimised for Q4_0 weights; the OpenCL backend covers
+Q4_0, Q4_K, Q5_K, Q6_K, Q8_0, MXFP4 and IQ4_NL.
 
 ## License
 

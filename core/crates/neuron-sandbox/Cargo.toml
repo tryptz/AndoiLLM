@@ -1,0 +1,18 @@
+[package]
+name = "neuron-sandbox"
+description = "Sandboxed JavaScript execution for Neuron on QuickJS, with memory and time limits"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+# `bindgen`: generate QuickJS bindings for the exact target (needed for
+# aarch64-linux-android, which has no prebuilt bindings shipped). Requires libclang
+# on the build host.
+rquickjs = { workspace = true, features = ["std", "bindgen"] }
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true

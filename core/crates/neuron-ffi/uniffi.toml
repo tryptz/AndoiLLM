@@ -1,0 +1,8 @@
+# Kotlin binding generation settings (read by `uniffi-bindgen generate --library`).
+[bindings.kotlin]
+package_name = "com.tryptz.neuron.core"
+cdylib_name = "neuron"
+android = true
+android_cleaner = true
+kotlin_target_version = "2.1.0"
+generate_immutable_records = true

@@ -1,60 +1,85 @@
 # Contributing to Neuron
 
-Thanks for your interest in contributing. This guide covers
-everything you need to get started.
+## Development setup
 
-## Development Setup
-
-1. Clone the repository
-2. Install Android Studio Ladybug (2024.2.2+)
-3. Install NDK r27+ and CMake 3.22.1+ via SDK Manager
-4. Clone native dependencies into `app/src/main/jni/`:
+1. Clone the repository.
+2. Install Android Studio (Ladybug or newer), Android SDK 36, NDK
+   `29.0.14206865`, CMake 3.22+, Ninja.
+3. Install Rust stable, the Android target and cargo-ndk:
    ```bash
-   cd app/src/main/jni
-   git clone --depth 1 https://github.com/ggml-org/llama.cpp.git llama_cpp
-   git clone --depth 1 https://github.com/nicbarker/quickjs.git quickjs
+   rustup target add aarch64-linux-android
+   cargo install cargo-ndk
    ```
-5. Build: `./gradlew assembleDebug`
+4. Build the OpenCL link stubs once:
+   ```bash
+   ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/29.0.14206865 core/scripts/setup-opencl-android.sh
+   ```
+5. `./gradlew assembleDebug`
+
+## Where things live
+
+```
+core/crates/neuron-core      engine + backend policy, SoC table, GGUF, templates, thermal, sampling
+core/crates/neuron-sandbox   QuickJS sandbox
+core/crates/neuron-ffi       UniFFI surface (what Kotlin sees)
+app/.../inference/core       NeuronCore: owns the engine, stages the HTP skel
+app/.../inference/backend    InferenceEngine façade, ThermalManager.classify
+app/.../code/sandbox         CodeExecutor (bash gate, language detection)
+app/.../domain, data, ui     app layers (unchanged by the core)
+```
+
+Rule of thumb: if it needs the model, a tokenizer, or a hardware backend, it
+belongs in Rust. If it needs a `Context`, Room, or Compose, it belongs in
+Kotlin. Mapping between the two lives in `InferenceEngine.kt`.
+
+## Testing
+
+```bash
+cd core
+cargo test -p neuron-core --no-default-features -p neuron-sandbox   # fast, pure Rust
+cargo test                                                          # also builds llama.cpp for the host
+cargo clippy --workspace --all-targets --no-default-features -- -D warnings
+cargo fmt --all --check
+cd ..
+./gradlew testDebugUnitTest
+```
+
+The Rust test suites are the source of truth for prompt templates, backend
+selection, thermal thresholds and the JS sandbox; the Kotlin tests cover
+domain mapping, the DataStore mapper, repositories and the bash gate.
+
+## Changing the FFI surface
+
+1. Edit `core/crates/neuron-ffi/src/lib.rs` (records, enums, `NeuronEngine`
+   methods, free functions).
+2. Build once (`./gradlew assembleDebug` or `core/scripts/build-android.sh`);
+   the Kotlin bindings regenerate into
+   `app/build/generated/source/uniffi/main`.
+3. Update the mapping in `InferenceEngine.kt`.
+
+Never hand-edit generated Kotlin; it is rebuilt on every change to `libneuron.so`.
 
 ## Branching
 
 - `main` — stable, always buildable
-- Feature branches: `feature/description` (e.g. `feature/npu-backend`)
-- Bug fixes: `fix/description`
+- Feature branches: `feature/description`, fixes: `fix/description`
 - Never name a branch `Claude/something`
 
-## Code Style
-
-- One concern per file. If a file exceeds ~150 lines, decompose it.
-- All domain types annotated `@Immutable` or `@Stable` for Compose.
-- Use `MotionTokens` for all animations — no ad-hoc spring configs.
-- Settings UI components live in `ui/settings/components/` as
-  individual composables.
-- Validate inputs before passing to native code (see `Validation.kt`).
-
-## Commit Convention
+## Commit convention
 
 ```
 type(scope): description
 
-feat(inference): add QNN NPU backend
-fix(chat): prevent crash on empty model list
-refactor(settings): decompose SettingsPanel into atomic components
+feat(core): add Hexagon power-mode setting
+fix(sandbox): classify QuickJS out-of-memory as Memory
+refactor(app): drop the JNI bridges in favour of UniFFI
 ```
 
-## Architecture
+Commits are authored as `tryptz`, without co-author trailers.
 
-```
-domain/model/    → @Immutable data classes, one per file
-data/            → Room, DataStore, repositories
-inference/       → JNI bridge, engine, prompt formatting, thermal
-code/            → QuickJS bridge, sandboxed executor
-ui/              → Compose screens, organized by feature
-ui/animation/    → MotionTokens + reusable animated composables
-util/            → DeviceMonitor, Validation, Extensions
-```
+## Code style
 
-## Testing
-
-Run `./gradlew test` for unit tests. Native code tests are run
-via `./gradlew connectedAndroidTest` on a physical device.
+- Kotlin: one concern per file; domain types `@Immutable`; animations through
+  `MotionTokens`; validate inputs before they reach the core.
+- Rust: `cargo fmt` + clippy clean; every `unsafe` block carries a `SAFETY:`
+  comment that states the invariant; pure logic gets host unit tests.

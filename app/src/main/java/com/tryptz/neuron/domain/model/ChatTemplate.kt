@@ -2,7 +2,8 @@ package com.tryptz.neuron.domain.model
 
 /**
  * Supported chat prompt templates.
- * Each variant maps to a formatting strategy in PromptFormatter.
+ * Each variant maps to a formatter in the Rust core (`neuron-core::template`);
+ * `raw` matches the core's template ids.
  */
 enum class ChatTemplate(val raw: String) {
     CHATML("chatml"),
