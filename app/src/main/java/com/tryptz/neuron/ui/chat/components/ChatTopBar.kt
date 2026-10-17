@@ -26,7 +26,8 @@ fun ChatTopBar(
     tokSec: Float,
     onNewChat: () -> Unit,
     onToggleModelSelector: () -> Unit,
-    onToggleSettings: () -> Unit
+    onToggleSettings: () -> Unit,
+    onOpenTerminal: () -> Unit = {}
 ) {
     val haptic = LocalHapticFeedback.current
 
@@ -66,6 +67,9 @@ fun ChatTopBar(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(end = 8.dp)
                 )
+            }
+            IconButton(onClick = onOpenTerminal) {
+                Icon(Icons.Default.Terminal, "Terminal")
             }
             IconButton(onClick = {
                 haptic.performHapticFeedback(HapticFeedbackType.LongPress)

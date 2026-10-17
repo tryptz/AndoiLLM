@@ -25,6 +25,7 @@ core/crates/neuron-ffi       UniFFI surface (what Kotlin sees)
 app/.../inference/core       NeuronCore: owns the engine, stages the HTP skel
 app/.../inference/backend    InferenceEngine façade, ThermalManager.classify
 app/.../code/sandbox         CodeExecutor (bash gate, language detection)
+app/.../terminal, ui/terminal  Termux terminal: sessions, bootstrap, extra keys
 app/.../domain, data, ui     app layers (unchanged by the core)
 ```
 

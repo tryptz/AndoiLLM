@@ -15,6 +15,7 @@ import com.tryptz.neuron.ui.animation.MotionTokens
 import com.tryptz.neuron.ui.chat.ChatScreen
 import com.tryptz.neuron.ui.editor.CodeEditorScreen
 import com.tryptz.neuron.ui.modelmanager.ModelManagerScreen
+import com.tryptz.neuron.ui.terminal.TerminalScreen
 
 /** SavedStateHandle key for code handed back from the editor to the chat input. */
 private const val KEY_EDITOR_CODE = "editor_code"
@@ -23,6 +24,7 @@ object Routes {
     const val CHAT = "chat"
     const val MODEL_MANAGER = "model_manager"
     const val EDITOR = "editor/{code}/{language}"
+    const val TERMINAL = "terminal"
 
     // Uri.encode (not URLEncoder) — Navigation Compose Uri-decodes route args
     // exactly once, and URLEncoder's "+" for spaces survives that decode as a
@@ -30,9 +32,20 @@ object Routes {
     fun editor(code: String, language: String) = "editor/${android.net.Uri.encode(code)}/$language"
 }
 
+/** SavedStateHandle key for text to type into the terminal (never auto-executed). */
+private const val KEY_TERMINAL_INPUT = "terminal_input"
+
 @Composable
-fun NeuronNavHost(codeExecutor: CodeExecutor) {
+fun NeuronNavHost(codeExecutor: CodeExecutor, openTerminal: Boolean = false, onTerminalOpened: () -> Unit = {}) {
     val navController = rememberNavController()
+
+    // Tapping the terminal notification lands here.
+    androidx.compose.runtime.LaunchedEffect(openTerminal) {
+        if (openTerminal) {
+            navController.navigate(Routes.TERMINAL) { launchSingleTop = true }
+            onTerminalOpened()
+        }
+    }
 
     NavHost(
         navController = navController,
@@ -69,8 +82,32 @@ fun NeuronNavHost(codeExecutor: CodeExecutor) {
             ChatScreen(
                 onNavigateToModelManager = { navController.navigate(Routes.MODEL_MANAGER) },
                 onNavigateToEditor = { code, lang -> navController.navigate(Routes.editor(code, lang)) },
+                onNavigateToTerminal = { input ->
+                    navController.navigate(Routes.TERMINAL) { launchSingleTop = true }
+                    if (input != null) navController.getBackStackEntry(Routes.TERMINAL).savedStateHandle[KEY_TERMINAL_INPUT] = input
+                },
                 pendingEditorCode = editorCode,
                 onPendingEditorCodeConsumed = { entry.savedStateHandle[KEY_EDITOR_CODE] = null }
+            )
+        }
+
+        composable(Routes.TERMINAL) { entry ->
+            val input by entry.savedStateHandle
+                .getStateFlow<com.tryptz.neuron.terminal.TerminalInput?>(KEY_TERMINAL_INPUT, null)
+                .collectAsState()
+            TerminalScreen(
+                pendingInput = input,
+                onPendingInputConsumed = { entry.savedStateHandle[KEY_TERMINAL_INPUT] = null },
+                onAskNeuron = { transcript ->
+                    // Hand the screen to the chat input (the user still chooses to send).
+                    val chat = runCatching { navController.getBackStackEntry(Routes.CHAT) }.getOrNull()
+                    chat?.savedStateHandle?.set(
+                        KEY_EDITOR_CODE,
+                        "Explain this terminal output and what I should do next:\n```\n$transcript\n```\n"
+                    )
+                    navController.popBackStack(Routes.CHAT, inclusive = false)
+                },
+                onBack = { navController.popBackStack() }
             )
         }
 

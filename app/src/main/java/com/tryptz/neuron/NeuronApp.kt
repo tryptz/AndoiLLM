@@ -42,10 +42,12 @@ class NeuronApp : Application(), Configuration.Provider {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL_DOWNLOADS, "Model Downloads", NotificationManager.IMPORTANCE_LOW))
         nm.createNotificationChannel(NotificationChannel(CHANNEL_INFERENCE, "Inference", NotificationManager.IMPORTANCE_MIN))
+        nm.createNotificationChannel(NotificationChannel(CHANNEL_TERMINAL, "Terminal sessions", NotificationManager.IMPORTANCE_LOW))
     }
 
     companion object {
         const val CHANNEL_DOWNLOADS = "downloads"
         const val CHANNEL_INFERENCE = "inference"
+        const val CHANNEL_TERMINAL = "terminal"
     }
 }

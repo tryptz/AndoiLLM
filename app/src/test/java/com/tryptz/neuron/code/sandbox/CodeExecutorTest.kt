@@ -17,7 +17,7 @@ import kotlin.test.assertTrue
  */
 class CodeExecutorTest {
 
-    private val executor: CodeExecutor = CodeExecutorImpl()
+    private val executor: CodeExecutor = CodeExecutorImpl(com.tryptz.neuron.code.shell.SystemShellRuntime)
     private val settings = InferenceSettings()
 
     // ── detectLanguage never returns BASH ──

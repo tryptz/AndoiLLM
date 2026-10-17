@@ -150,3 +150,23 @@ machine produces CPU + OpenCL and the engine simply reports no NPU device.
 
 Rust (and llama.cpp through it) logs under the logcat tag `NeuronCore`; Kotlin
 logs under `Neuron.*`. `adb logcat -s NeuronCore Neuron.*` shows the stack.
+
+## Terminal
+
+`terminal/` (Kotlin) embeds Termux's terminal libraries and, optionally, the
+Termux userland.
+
+| file | job |
+|---|---|
+| `TerminalSessionManager` | singleton owning sessions, bootstrap install, mode choice, chat handoff |
+| `BootstrapInstaller` | port of termux-app's TermuxInstaller: staging dir, `SYMLINKS.txt`, 0700 on binaries, atomic rename |
+| `TermuxEnvironment` | the env termux-app v0.119 exports; `$PREFIX/bin/login` adds termux-exec's `LD_PRELOAD` |
+| `TerminalService` | foreground service while sessions exist, optional wake lock, Exit action |
+| `ModifierKeys`, `ExtraKeysRow` | sticky on-screen modifiers fed to the view through `TerminalViewClient.read*Key` |
+| `TerminalInputStager` | turns chat code into a single typed line so nothing runs before Enter |
+| `code/shell/ShellRuntime` | Code Editor shell runs use Termux bash + env once the userland exists |
+
+The userland runs only under `applicationId = "com.termux"` with
+`targetSdk = 28` (see README "Terminal → Two modes"). Under any other ID the
+manager uses `/system/bin/sh`, and Gradle skips bundling the bootstrap.
+

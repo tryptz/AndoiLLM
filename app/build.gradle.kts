@@ -1,3 +1,6 @@
+import java.net.URI
+import java.net.URLEncoder
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -113,6 +116,61 @@ val generateUniffiBindings by tasks.registering(Exec::class) {
     )
 }
 
+// ───────────────────────── Termux userland (bootstrap) ─────────────────────────
+// The Termux apt bootstrap (bash, coreutils, apt/pkg, termux-exec) is built for
+// /data/data/com.termux/files/usr, so it is only bundled when the app is
+// installed under that ID. Pinned to the release termux-app master uses and
+// verified by SHA-256; `-PtermuxBootstrap=<zip>` uses a local file instead (for
+// example one made by termux-packages' scripts/generate-bootstraps.sh).
+val termuxBootstrapVersion = "2026.02.12-r1+apt.android-7"
+val termuxBootstrapSha256 = "ea2aeba8819e517db711f8c32369e89e7c52cee73e07930ff91185e1ab93f4f3"
+val termuxAssets = layout.buildDirectory.dir("termuxAssets")
+
+fun sha256Of(file: File): String {
+    val md = MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { input ->
+        val buf = ByteArray(1 shl 16)
+        while (true) { val n = input.read(buf); if (n < 0) break; md.update(buf, 0, n) }
+    }
+    return md.digest().joinToString("") { "%02x".format(it) }
+}
+
+val prepareTermuxBootstrap by tasks.registering {
+    group = "termux"
+    description = "Bundles bootstrap-aarch64.zip into the APK assets (com.termux installs only)"
+    val local = (findProperty("termuxBootstrap") as String?)?.let { rootProject.file(it) }
+    val out = termuxAssets.map { it.file("termux/bootstrap-aarch64.zip") }
+    inputs.property("version", termuxBootstrapVersion)
+    local?.let { inputs.file(it) }
+    outputs.dir(termuxAssets)
+    onlyIf {
+        val id = android.defaultConfig.applicationId
+        (id == "com.termux").also { bundled ->
+            if (!bundled) logger.lifecycle("Neuron: Termux userland not bundled (applicationId is $id, packages need com.termux)")
+        }
+    }
+    doLast {
+        val dest = out.get().asFile
+        dest.parentFile.mkdirs()
+        if (local != null) {
+            require(local.isFile) { "termuxBootstrap: $local not found" }
+            local.copyTo(dest, overwrite = true)
+            logger.lifecycle("Neuron: bundled local Termux bootstrap ${local.name} sha256=${sha256Of(dest)}")
+            return@doLast
+        }
+        if (dest.isFile && sha256Of(dest) == termuxBootstrapSha256) return@doLast
+        val tag = URLEncoder.encode("bootstrap-$termuxBootstrapVersion", "UTF-8")
+        val url = URI("https://github.com/termux/termux-packages/releases/download/$tag/bootstrap-aarch64.zip").toURL()
+        logger.lifecycle("Neuron: downloading $url")
+        url.openStream().use { input -> dest.outputStream().use { input.copyTo(it) } }
+        val actual = sha256Of(dest)
+        if (actual != termuxBootstrapSha256) {
+            dest.delete()
+            throw GradleException("Termux bootstrap checksum mismatch: expected $termuxBootstrapSha256, got $actual")
+        }
+    }
+}
+
 android {
     namespace = "com.tryptz.neuron"
     compileSdk = 36
@@ -157,10 +215,11 @@ android {
 
     // HTP skels must be stored uncompressed: NeuronCore compares the asset's
     // openFd() length with the staged copy, and openFd() fails on compressed assets.
-    androidResources { noCompress += "so" }
+    androidResources { noCompress += listOf("so", "zip") }
 
     sourceSets["main"].jniLibs.srcDir(rustJniLibs)
     sourceSets["main"].assets.srcDir(rustAssets)
+    sourceSets["main"].assets.srcDir(termuxAssets)
     sourceSets["main"].kotlin.srcDir(uniffiKotlinOut)
 
     compileOptions {
@@ -177,7 +236,7 @@ android {
     }
 }
 
-tasks.named("preBuild") { dependsOn(collectRustLibs, collectHtpSkels, generateUniffiBindings) }
+tasks.named("preBuild") { dependsOn(collectRustLibs, collectHtpSkels, generateUniffiBindings, prepareTermuxBootstrap) }
 
 composeCompiler {
     stabilityConfigurationFile = rootProject.layout.projectDirectory.file("compose_stability.conf")
@@ -225,6 +284,7 @@ dependencies {
     implementation(libs.activity.compose)
     // JNA is the FFI runtime of the UniFFI-generated bindings.
     implementation("${libs.jna.get()}@aar")
+    implementation(libs.termux.terminal.view)
     testImplementation(libs.junit)
     testImplementation(libs.kotlin.test)
     testImplementation(libs.kotlinx.coroutines.test)

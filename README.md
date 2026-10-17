@@ -174,6 +174,83 @@ The Model Manager also imports any GGUF from device storage and reads its
 header (architecture, context length, quantization, chat template) to fill in
 the settings.
 
+## Terminal
+
+Neuron has a built-in terminal (top bar → terminal icon), built on Termux's
+own `terminal-emulator` and `terminal-view` libraries (v0.118.3): real pty,
+full VT/xterm emulation, 256-color and truecolor, 10,000 lines of scrollback,
+several sessions as tabs.
+
+It fixes the Termux habits that make people rage:
+
+| Termux pain | Neuron terminal |
+|---|---|
+| Ctrl is "hold volume-down" | On-screen CTRL / ALT / SHIFT / FN; tap = next key, tap twice = locked, with visible state |
+| Extra keys cramped on narrow phones | Two scrollable rows; ESC, TAB, arrows, HOME/END, PGUP/PGDN, `/ - \| ~` |
+| Pinch-zoom font size forgotten | Remembered |
+| Gboard autocorrect swallowing input | Character-based input is always enforced |
+| Back button doubles as Escape | Back navigates; Esc is a key |
+| Keyboard covers the prompt | Terminal resizes above the keyboard |
+| Sessions killed in the background | Foreground service while sessions exist; optional wake lock; one-tap "don't optimize battery" |
+| Copy/paste only by long-press | Paste and Copy-screen buttons |
+| Finished sessions linger as "[Process completed]" | They close themselves |
+| `termux-setup-storage` you have to know about | Menu → Set up storage creates `~/storage/*` |
+| First-run install that can leave a broken prefix | Staged install with progress; failure leaves nothing behind; Retry |
+
+It is wired into chat:
+
+- Shell and Python code blocks get **Open in terminal**. The code is typed at
+  the prompt and **never executed until you press Enter**. Multi-line code and
+  Python are saved to `~/.neuron/snippets/N.sh|py` and the typed line is the
+  command that runs it, because Android's `mksh` has no bracketed paste and
+  would run each line as it arrived.
+- The terminal's **Ask Neuron** button sends the last screenful to the chat
+  input, prefixed with "Explain this terminal output…". You still choose to send.
+
+### Two modes
+
+| | System shell (current build) | Termux userland |
+|---|---|---|
+| Shell | Android `/system/bin/sh` (mksh) | Termux `bash` via `$PREFIX/bin/login` |
+| `pkg install …` | no | yes, the full Termux apt repos |
+| App ID / target SDK | `com.tryptz.neuron` / 36 | `com.termux` / 28 |
+
+The terminal picks the mode on its own and says which one in a banner.
+
+To get the userland, set these two values in `app/build.gradle.kts`'s
+`defaultConfig`:
+
+```kotlin
+applicationId = "com.termux"
+targetSdk = 28
+```
+
+Why both are needed:
+- **App ID.** Every Termux package is compiled for
+  `/data/data/com.termux/files/usr`. Shebangs, library paths and config paths
+  are baked into the binaries, so the app must live at that path.
+- **Target SDK.** Android 10+ forbids apps targeting SDK 29 or higher from
+  executing files they wrote to their own data folder, and that is where every
+  package binary lives. Termux itself targets 28 for this reason.
+
+What changes when you do:
+- **No coexistence.** The app can't be installed next to the official Termux app.
+- **New app on the phone.** It installs separately from a `com.tryptz.neuron`
+  install, so models and chats are not shared with that copy.
+- **Bootstrap bundling.** Gradle then bundles the Termux bootstrap (≈33 MB),
+  pinned to the release termux-app master uses, `2026.02.12-r1`, and
+  SHA-256-verified. `-PtermuxBootstrap=<zip>` bundles a local one instead,
+  for example from termux-packages' `scripts/generate-bootstraps.sh`.
+- **Shell runs from the Code Editor** switch to Termux `bash` with the Termux
+  environment, so `pkg`-installed tools work there too.
+
+On Android 12+ the system's "phantom process killer" can still kill long
+background jobs. That can only be switched off over adb:
+
+```bash
+adb shell "settings put global settings_enable_monitor_phantom_procs false"
+```
+
 ## Logging
 
 ```bash

@@ -16,6 +16,7 @@ kotlinx-coroutines = "1.9.0"
 markwon = "4.6.2"
 timber = "5.0.1"
 jna = "5.19.1"
+termux = "v0.118.3"
 
 [libraries]
 compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "compose-bom" }
@@ -51,6 +52,8 @@ markwon-syntax = { group = "io.noties.markwon", name = "syntax-highlight", versi
 timber = { group = "com.jakewharton.timber", name = "timber", version.ref = "timber" }
 # Runtime for the UniFFI-generated Kotlin bindings of libneuron (Rust core).
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
+# Termux terminal: emulator (pty + VT parser, native libtermux.so) and the Android view.
+termux-terminal-view = { group = "com.github.termux.termux-app", name = "terminal-view", version.ref = "termux" }
 core-ktx = { group = "androidx.core", name = "core-ktx", version = "1.15.0" }
 activity-compose = { group = "androidx.activity", name = "activity-compose", version = "1.9.3" }
 junit = { group = "junit", name = "junit", version = "4.13.2" }

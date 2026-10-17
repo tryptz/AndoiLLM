@@ -1,5 +1,6 @@
 package com.tryptz.neuron.code.sandbox
 
+import com.tryptz.neuron.code.shell.ShellRuntime
 import com.tryptz.neuron.core.JsErrorKind
 import com.tryptz.neuron.core.JsLimits
 import com.tryptz.neuron.core.runJavascript
@@ -38,7 +39,9 @@ interface CodeExecutor {
 }
 
 @Singleton
-class CodeExecutorImpl @Inject constructor() : CodeExecutor {
+class CodeExecutorImpl @Inject constructor(
+    private val shell: ShellRuntime
+) : CodeExecutor {
 
 
     override suspend fun execute(
@@ -110,9 +113,9 @@ class CodeExecutorImpl @Inject constructor() : CodeExecutor {
         // Chaquopy integration — requires Chaquopy Gradle plugin.
         // For now, return a placeholder that explains the setup needed.
         return CodeOutput(
-            stderr = "Python execution requires Chaquopy SDK integration. " +
-                     "Add the Chaquopy Gradle plugin and configure the Python distribution.",
-            error = CodeError(ErrorType.RUNTIME, "Python backend not yet configured")
+            stderr = "Python runs in the terminal: open the code block in the terminal, " +
+                "after `pkg install python` once.",
+            error = CodeError(ErrorType.RUNTIME, "Use \"Open in terminal\" for Python")
         )
     }
 
@@ -122,9 +125,11 @@ class CodeExecutorImpl @Inject constructor() : CodeExecutor {
      */
     private fun executeBash(code: String, settings: InferenceSettings): CodeOutput {
         return try {
-            val process = ProcessBuilder("/system/bin/sh", "-c", code)
-                .redirectErrorStream(false)
-                .start()
+            // Termux bash + environment once the userland is installed, else /system/bin/sh.
+            val builder = ProcessBuilder(shell.command(code)).redirectErrorStream(false)
+            shell.environment()?.let { env -> builder.environment().apply { clear(); putAll(env) } }
+            shell.workingDirectory()?.let { builder.directory(it) }
+            val process = builder.start()
 
             // Drain stdout/stderr WHILE waiting: a child that writes more than
             // the ~64KB pipe buffer blocks forever if we only read after
