@@ -77,13 +77,13 @@ val generateUniffiBindings by tasks.registering(Exec::class) {
     workingDir = rustDir
     val library = rustTargetDir.resolve("libneuron.so")
     inputs.file(library)
+    // Library mode picks up crates/neuron-ffi/uniffi.toml through cargo metadata.
     inputs.file(rustDir.resolve("crates/neuron-ffi/uniffi.toml"))
     outputs.dir(uniffiKotlinOut)
     commandLine(
         "cargo", "run", "-q", "-p", "uniffi-bindgen", "--release", "--",
         "generate", "--library", library.absolutePath,
         "--language", "kotlin",
-        "--config", rustDir.resolve("crates/neuron-ffi/uniffi.toml").absolutePath,
         "--no-format",
         "--out-dir", uniffiKotlinOut.get().asFile.absolutePath
     )

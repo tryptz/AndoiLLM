@@ -61,6 +61,5 @@ if [[ -n "$SKELS" ]]; then
 fi
 
 (cd "$CORE" && cargo run -q -p uniffi-bindgen --release -- generate \
-  --library "$TARGET_DIR/libneuron.so" --language kotlin \
-  --config "$CORE/crates/neuron-ffi/uniffi.toml" --no-format --out-dir "$KOTLIN_OUT")
+  --library "$TARGET_DIR/libneuron.so" --language kotlin --no-format --out-dir "$KOTLIN_OUT")
 echo ">> Kotlin bindings: $KOTLIN_OUT"
