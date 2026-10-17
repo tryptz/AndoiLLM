@@ -59,3 +59,6 @@ keystore.properties
 
 # Build artifacts are published from CI, not from git
 *.apk
+
+# Kotlin compiler session data
+.kotlin/
