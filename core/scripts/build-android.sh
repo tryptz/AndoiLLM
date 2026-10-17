@@ -47,7 +47,7 @@ ARGS=(ndk -t arm64-v8a -P "${ANDROID_API_LEVEL:-28}" --link-libcxx-shared -o "$O
 [[ "$PROFILE" == release ]] && ARGS+=(--release)
 (cd "$CORE" && cargo "${ARGS[@]}")
 
-TARGET_DIR="$CORE/target/aarch64-linux-android/$PROFILE"
+TARGET_DIR="${CARGO_TARGET_DIR:-$CORE/target}/aarch64-linux-android/$PROFILE"
 mkdir -p "$OUT/arm64-v8a"
 cp "$TARGET_DIR"/neuron-libs/*.so "$OUT/arm64-v8a/" 2>/dev/null || true
 echo ">> jniLibs:"; ls -1 "$OUT/arm64-v8a"

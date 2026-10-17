@@ -113,8 +113,9 @@ Snapdragon toolchain image used by llama.cpp:
 ```bash
 docker run --rm -it -v "$PWD":/workspace -w /workspace \
   ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
-  bash -c 'HEXAGON_SDK_ROOT=/opt/hexagon/6.6.0.0 ANDROID_NDK_ROOT=/opt/android-ndk-r28b \
-           OPENCL_SDK_ROOT=/opt/OpenCL-SDK core/scripts/build-android.sh --out core/target/android-jniLibs'
+  bash -c 'export ANDROID_NDK_ROOT=/opt/android-ndk-r29 HEXAGON_SDK_ROOT=/opt/hexagon/6.6.0.0 &&
+           core/scripts/setup-opencl-android.sh &&
+           core/scripts/build-android.sh --out core/target/android-jniLibs'
 cp core/target/android-jniLibs/htp/libggml-htp-v81.so app/src/main/assets/htp/
 ```
 

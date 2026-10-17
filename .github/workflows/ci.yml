@@ -75,18 +75,27 @@ jobs:
     container:
       image: ghcr.io/snapdragon-toolchain/arm64-android:v0.7
       options: --user root
+    env:
+      # The image has clang but no `cc`; Rust host build scripts need a linker.
+      CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: clang
+      CC_x86_64_unknown_linux_gnu: clang
+      CXX_x86_64_unknown_linux_gnu: clang++
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with: { targets: aarch64-linux-android }
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
+      # The image ships NDK r29 and Hexagon SDK 6.6.0.0 but no OpenCL SDK, so
+      # build the Khronos link stubs the same way the android job does.
+      - name: Build OpenCL link stubs for Adreno
+        run: core/scripts/setup-opencl-android.sh
+        env: { ANDROID_NDK_ROOT: /opt/android-ndk-r29 }
       - name: Build libneuron with Hexagon + OpenCL
         run: core/scripts/build-android.sh --out core/target/android-jniLibs
         env:
-          ANDROID_NDK_ROOT: /opt/android-ndk-r28b
+          ANDROID_NDK_ROOT: /opt/android-ndk-r29
           HEXAGON_SDK_ROOT: /opt/hexagon/6.6.0.0
-          OPENCL_SDK_ROOT: /opt/OpenCL-SDK
       - uses: actions/upload-artifact@v4
         with:
           name: neuron-snapdragon-libs

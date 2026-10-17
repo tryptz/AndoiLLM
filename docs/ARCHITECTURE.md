@@ -128,7 +128,7 @@ library into one predictable folder.
 
 The Hexagon backend needs the Hexagon SDK, which exists only inside Qualcomm's
 toolchain container (`ghcr.io/snapdragon-toolchain/arm64-android:v0.7`,
-Hexagon SDK 6.6.0.0). The `hexagon` CI job builds there and publishes
+Hexagon SDK 6.6.0.0, NDK r29). The image has no Rust toolchain or OpenCL SDK of its own. The `hexagon` CI job builds there and publishes
 `libggml-hexagon.so` and the skels as an artifact. A build on an ordinary
 machine produces CPU + OpenCL and the engine simply reports no NPU device.
 
