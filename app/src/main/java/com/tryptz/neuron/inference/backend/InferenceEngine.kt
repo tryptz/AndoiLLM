@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.channelFlow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -196,10 +197,11 @@ class InferenceEngineImpl @Inject constructor(
 
         // The Rust side streams through this callback on the calling (IO) thread.
         // <think> handling stays here: it is a presentation concern.
+        val scope = this
         val sink = object : TokenSink {
             private var inThinking = false
             override fun onToken(text: String, tokSec: Float): Boolean {
-                if (!isActive) return false
+                if (!scope.isActive) return false
                 var handled = false
                 if (model.descriptor.capabilities.reasoning) {
                     when {
@@ -210,7 +212,7 @@ class InferenceEngineImpl @Inject constructor(
                 }
                 if (!handled) trySend(InferenceEvent.Token(text, tokSec))
                 publishTelemetry(engine.telemetry())
-                return isActive
+                return scope.isActive
             }
         }
 

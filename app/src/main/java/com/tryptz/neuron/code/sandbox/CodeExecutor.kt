@@ -40,7 +40,6 @@ interface CodeExecutor {
 @Singleton
 class CodeExecutorImpl @Inject constructor() : CodeExecutor {
 
-    private val json = Json { ignoreUnknownKeys = true }
 
     override suspend fun execute(
         code: String,
