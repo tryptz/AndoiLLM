@@ -47,7 +47,9 @@ fn copy_shared_libs(from: &Path, to: &Path) {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         let is_shared = name.ends_with(".so") || name.contains(".so.") || name.ends_with(".dylib");
-        if path.is_file() && is_shared {
+        // `common` is llama.cpp's CLI helper library; nothing in libneuron links it.
+        let is_wanted = is_shared && !name.contains("llama-common");
+        if path.is_file() && is_wanted {
             let target = to.join(&*name);
             if let Err(e) = fs::copy(&path, &target) {
                 println!(
