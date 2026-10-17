@@ -139,9 +139,18 @@ keyAlias=neuron
 keyPassword=...
 ```
 
-Both the properties file and `*.jks` are git-ignored. Keep the keystore and
-its passwords in a password manager: an app update must be signed with the
-same key or Android refuses to install it over the previous version.
+Both the properties file and `*.jks` are git-ignored. The keystore is PKCS12,
+so `keyPassword` must equal `storePassword` (Java ignores a separate key
+password for PKCS12). Keep the keystore and its password in a password
+manager: an app update must be signed with the same key or Android refuses to
+install it over the previous version.
+
+To create a fresh key:
+
+```bash
+keytool -genkeypair -keystore neuron-release.jks -storetype PKCS12 -alias neuron \
+  -keyalg RSA -keysize 4096 -validity 10950 -dname "CN=Neuron, O=tryptz"
+```
 
 ### Sideloading models
 
