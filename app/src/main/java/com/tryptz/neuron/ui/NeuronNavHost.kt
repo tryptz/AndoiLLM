@@ -14,6 +14,7 @@ import com.tryptz.neuron.code.sandbox.CodeExecutor
 import com.tryptz.neuron.ui.animation.MotionTokens
 import com.tryptz.neuron.ui.chat.ChatScreen
 import com.tryptz.neuron.ui.editor.CodeEditorScreen
+import com.tryptz.neuron.ui.browser.HfBrowserScreen
 import com.tryptz.neuron.ui.modelmanager.ModelManagerScreen
 import com.tryptz.neuron.ui.terminal.TerminalScreen
 
@@ -25,6 +26,7 @@ object Routes {
     const val MODEL_MANAGER = "model_manager"
     const val EDITOR = "editor/{code}/{language}"
     const val TERMINAL = "terminal"
+    const val HF_BROWSER = "hf_browser"
 
     // Uri.encode (not URLEncoder) — Navigation Compose Uri-decodes route args
     // exactly once, and URLEncoder's "+" for spaces survives that decode as a
@@ -112,7 +114,22 @@ fun NeuronNavHost(codeExecutor: CodeExecutor, openTerminal: Boolean = false, onT
         }
 
         composable(Routes.MODEL_MANAGER) {
-            ModelManagerScreen(onBack = { navController.popBackStack() })
+            ModelManagerScreen(
+                onBack = { navController.popBackStack() },
+                onOpenHfBrowser = { navController.navigate(Routes.HF_BROWSER) { launchSingleTop = true } }
+            )
+        }
+
+        composable(Routes.HF_BROWSER) {
+            HfBrowserScreen(
+                onClose = { navController.popBackStack() },
+                onOpenModels = {
+                    // Back to the Model Manager if we came from it, else open it.
+                    if (!navController.popBackStack(Routes.MODEL_MANAGER, inclusive = false)) {
+                        navController.navigate(Routes.MODEL_MANAGER) { popUpTo(Routes.CHAT) }
+                    }
+                }
+            )
         }
 
         composable(

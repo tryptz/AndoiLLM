@@ -38,6 +38,12 @@ class ModelDownloadWorker @AssistedInject constructor(
         const val KEY_FILENAME = "filename"
         const val KEY_DISPLAY_NAME = "display_name"
         const val KEY_SOURCE_REPO = "source_repo"
+        /** False for parts 2..N of a split model: on disk, but not a library entry. */
+        const val KEY_REGISTER = "register"
+        /** Tag on every model download, so any screen can observe them all. */
+        const val TAG_ALL = "model_download"
+        /** Prefix of the tag carrying a human-readable name for progress UIs. */
+        const val TAG_NAME_PREFIX = "model_name:"
 
         /**
          * Computes a download completion percentage (0..100) without throwing.
@@ -63,7 +69,9 @@ class ModelDownloadWorker @AssistedInject constructor(
             filename: String? = null,
             displayName: String? = null,
             sourceRepo: String? = null,
-            wifiOnly: Boolean = true
+            wifiOnly: Boolean = true,
+            registerAsModel: Boolean = true,
+            extraTags: List<String> = emptyList()
         ): OneTimeWorkRequest {
             val constraints = Constraints.Builder()
                 // Honors the "Wi-Fi only downloads" setting — these are
@@ -79,9 +87,13 @@ class ModelDownloadWorker @AssistedInject constructor(
                     KEY_URL to url,
                     KEY_FILENAME to filename,
                     KEY_DISPLAY_NAME to displayName,
-                    KEY_SOURCE_REPO to sourceRepo
+                    KEY_SOURCE_REPO to sourceRepo,
+                    KEY_REGISTER to registerAsModel
                 ))
                 .addTag("model_download_$modelId")
+                .addTag(TAG_ALL)
+                .addTag(TAG_NAME_PREFIX + (displayName ?: filename ?: modelId))
+                .apply { extraTags.forEach { addTag(it) } }
                 .build()
         }
     }
@@ -227,6 +239,10 @@ class ModelDownloadWorker @AssistedInject constructor(
         outputFile: File,
         sizeBytes: Long
     ) {
+        if (!inputData.getBoolean(KEY_REGISTER, true)) {
+            Timber.i("[op=download_part_saved] file=${outputFile.name} (not registered: split-model part)")
+            return
+        }
         if (isHfDownload) {
             // HF-initiated download → register as a LocalModelEntity so
             // it appears in the user's library (no curated descriptor).

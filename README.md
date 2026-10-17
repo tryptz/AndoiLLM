@@ -162,6 +162,25 @@ keytool -genkeypair -keystore neuron-release.jks -storetype PKCS12 -alias neuron
   -keyalg RSA -keysize 4096 -validity 10950 -dname "CN=Neuron, O=tryptz"
 ```
 
+### Downloading models
+
+Models → **Browse** (globe icon) opens Hugging Face inside the app, starting on
+trending GGUF models. Tapping any `.gguf` download link, or **Download to
+Neuron** on a file page, goes through Neuron's own downloader rather than the
+WebView or Chrome. That means resume after a dropped connection, the Wi-Fi-only
+setting, a progress notification, and the model appearing in your library when
+it finishes. A progress strip at the bottom of the browser shows what's running.
+
+Before downloading, Neuron checks:
+- **Size against free space.** The download button is disabled if it won't fit.
+- **Split models** (`…-00001-of-00003.gguf`). Every part is fetched, and the
+  model shows up once, when the last part lands.
+- **Gated or private repos** (for example official Llama). Neuron downloads
+  without a Hugging Face login, so instead of failing at 0 bytes it says so and
+  offers to search for ungated GGUF mirrors.
+
+Links outside Hugging Face open in your normal browser.
+
 ### Sideloading models
 
 Models download inside the app from Hugging Face. To sideload:
