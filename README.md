@@ -108,21 +108,30 @@ Useful flags:
 
 `libggml-hexagon.so` and the DSP-side skels (`libggml-htp-v81.so` for the
 8 Elite Gen 5) need the Hexagon SDK, which Qualcomm ships only inside the
-Snapdragon toolchain image used by llama.cpp:
+Snapdragon toolchain image used by llama.cpp. The image has Hexagon SDK
+6.6.0.0 and NDK r29 but no Rust, so mount yours in:
 
 ```bash
-docker run --rm -it -v "$PWD":/workspace -w /workspace \
+docker run --rm --network host -v "$PWD":"$PWD" -w "$PWD/core" \
+  -v ~/.cargo:/root/.cargo -v ~/.rustup:/root/.rustup \
+  -e PATH=/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin \
+  -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=clang \
+  -e CC_x86_64_unknown_linux_gnu=clang -e CXX_x86_64_unknown_linux_gnu=clang++ \
+  -e CMAKE_GENERATOR=Ninja -e CARGO_TARGET_DIR="$PWD/core/target/snapdragon" \
+  -e ANDROID_NDK_ROOT=/opt/android-ndk-r29 -e HEXAGON_SDK_ROOT=/opt/hexagon/6.6.0.0 \
+  -e OPENCL_SDK_ROOT="$PWD/core/third_party/opencl-android" \
   ghcr.io/snapdragon-toolchain/arm64-android:v0.7 \
-  bash -c 'export ANDROID_NDK_ROOT=/opt/android-ndk-r29 HEXAGON_SDK_ROOT=/opt/hexagon/6.6.0.0 &&
-           core/scripts/setup-opencl-android.sh &&
-           core/scripts/build-android.sh --out core/target/android-jniLibs'
-cp core/target/android-jniLibs/htp/libggml-htp-v81.so app/src/main/assets/htp/
+  scripts/build-android.sh --out "$PWD/core/target/android-jniLibs"
+
+./gradlew assembleRelease -PneuronPrebuiltLibs=core/target/android-jniLibs
 ```
 
-Then `./gradlew assembleDebug` with `HEXAGON_SDK_ROOT` set, or drop the
-`arm64-v8a/*.so` from that output into `app/build/rustJniLibs/arm64-v8a/`.
-The `hexagon` CI job does this on every push and uploads the libraries as an
-artifact. Without them the engine lists no HTP device and uses the GPU or CPU.
+The image has `clang` and `ninja` but no `cc` or `make`, hence the extra
+variables. `-PneuronPrebuiltLibs` makes Gradle package that output instead of
+running cargo: ARM libraries go to `jniLibs`, the `htp/` skels go to assets
+uncompressed. The `hexagon` CI job runs the same build and uploads the
+libraries as an artifact. Without them the engine lists no HTP device and uses
+the GPU or CPU.
 
 Hexagon knobs are environment variables read by the backend; the app sets the
 important ones (`ADSP_LIBRARY_PATH`/`DSP_LIBRARY_PATH` to the skel directory,

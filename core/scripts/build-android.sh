@@ -49,14 +49,14 @@ ARGS=(ndk -t arm64-v8a -P "${ANDROID_API_LEVEL:-28}" --link-libcxx-shared -o "$O
 
 TARGET_DIR="${CARGO_TARGET_DIR:-$CORE/target}/aarch64-linux-android/$PROFILE"
 mkdir -p "$OUT/arm64-v8a"
+rm -f "$OUT"/arm64-v8a/libggml-htp-*.so
 cp "$TARGET_DIR"/neuron-libs/*.so "$OUT/arm64-v8a/" 2>/dev/null || true
 echo ">> jniLibs:"; ls -1 "$OUT/arm64-v8a"
 
 # HTP skels are Hexagon ELF objects, not ARM libraries: they ship as assets.
-SKELS=$(find "$TARGET_DIR/build" -name 'libggml-htp-v*.so' 2>/dev/null || true)
-if [[ -n "$SKELS" ]]; then
+if compgen -G "$TARGET_DIR/neuron-libs/htp/libggml-htp-v*.so" >/dev/null; then
   mkdir -p "$OUT/htp"
-  echo "$SKELS" | xargs -I{} cp {} "$OUT/htp/"
+  cp "$TARGET_DIR"/neuron-libs/htp/*.so "$OUT/htp/"
   echo ">> HTP skels:"; ls -1 "$OUT/htp"
 fi
 

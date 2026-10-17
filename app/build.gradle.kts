@@ -18,12 +18,24 @@ val rustTriple = "aarch64-linux-android"
 val rustProfile = if (project.hasProperty("rustDebug")) "debug" else "release"
 val rustTargetDir: File = rustDir.resolve("target/$rustTriple/$rustProfile")
 val rustJniLibs = layout.buildDirectory.dir("rustJniLibs")
+val rustAssets = layout.buildDirectory.dir("rustAssets")
 val uniffiKotlinOut = layout.buildDirectory.dir("generated/source/uniffi/main")
 val androidApiLevel = 28
+
+// `-PneuronPrebuiltLibs=<dir>` packages a core built elsewhere instead of running
+// cargo — typically the output of core/scripts/build-android.sh inside the
+// Snapdragon toolchain image, the only place the Hexagon NPU backend can be
+// built. The directory holds arm64-v8a/*.so and, optionally, htp/*.so.
+val prebuiltLibs: File? = (findProperty("neuronPrebuiltLibs") as String?)?.let { rootProject.file(it) }
+prebuiltLibs?.let {
+    require(it.resolve("arm64-v8a/libneuron.so").isFile) { "neuronPrebuiltLibs: $it/arm64-v8a/libneuron.so not found" }
+    logger.lifecycle("Neuron: packaging prebuilt core from $it")
+}
 
 val cargoNdkBuild by tasks.registering(Exec::class) {
     group = "rust"
     description = "Cross-compiles libneuron.so and the ggml backend modules for arm64-v8a"
+    onlyIf { prebuiltLibs == null }
     workingDir = rustDir
     inputs.files(rustDir.resolve("Cargo.toml"), rustDir.resolve("Cargo.lock"))
     inputs.dir(rustDir.resolve("crates"))
@@ -50,15 +62,15 @@ val cargoNdkBuild by tasks.registering(Exec::class) {
     if (openclSdk.resolve("lib/libOpenCL.so").exists()) {
         environment("GGML_OPENCL", "ON")
         environment("OPENCL_SDK_ROOT", openclSdk.absolutePath)
-    } else {
+    } else if (prebuiltLibs == null) {
         logger.warn("Neuron: Adreno OpenCL backend OFF — run core/scripts/setup-opencl-android.sh")
     }
     val hexagonSdk = System.getenv("HEXAGON_SDK_ROOT")
     if (hexagonSdk != null && File(hexagonSdk).isDirectory) {
         environment("GGML_HEXAGON", "ON")
         environment("HEXAGON_SDK_ROOT", hexagonSdk)
-    } else {
-        logger.warn("Neuron: Hexagon NPU backend OFF — HEXAGON_SDK_ROOT not set (build inside the Snapdragon toolchain image)")
+    } else if (prebuiltLibs == null) {
+        logger.warn("Neuron: Hexagon NPU backend OFF — HEXAGON_SDK_ROOT not set; see README \"Hexagon NPU backend\"")
     }
 }
 
@@ -66,8 +78,20 @@ val cargoNdkBuild by tasks.registering(Exec::class) {
 val collectRustLibs by tasks.registering(Copy::class) {
     group = "rust"
     dependsOn(cargoNdkBuild)
-    from(rustTargetDir.resolve("neuron-libs")) { include("*.so") }
+    if (prebuiltLibs != null) {
+        from(prebuiltLibs.resolve("arm64-v8a")) { include("*.so"); exclude("libggml-htp-*") }
+    } else {
+        from(rustTargetDir.resolve("neuron-libs")) { include("*.so") }
+    }
     into(rustJniLibs.map { it.dir("arm64-v8a") })
+}
+
+/** Hexagon DSP skels (libggml-htp-vNN.so) travel as assets; see NeuronCore.kt. */
+val collectHtpSkels by tasks.registering(Sync::class) {
+    group = "rust"
+    dependsOn(cargoNdkBuild)
+    from(prebuiltLibs?.resolve("htp") ?: rustTargetDir.resolve("neuron-libs/htp")) { include("libggml-htp-v*.so") }
+    into(rustAssets.map { it.dir("htp") })
 }
 
 val generateUniffiBindings by tasks.registering(Exec::class) {
@@ -75,7 +99,7 @@ val generateUniffiBindings by tasks.registering(Exec::class) {
     description = "Generates Kotlin bindings (com.tryptz.neuron.core) from libneuron.so"
     dependsOn(cargoNdkBuild)
     workingDir = rustDir
-    val library = rustTargetDir.resolve("libneuron.so")
+    val library = prebuiltLibs?.resolve("arm64-v8a/libneuron.so") ?: rustTargetDir.resolve("libneuron.so")
     inputs.file(library)
     // Library mode picks up crates/neuron-ffi/uniffi.toml through cargo metadata.
     inputs.file(rustDir.resolve("crates/neuron-ffi/uniffi.toml"))
@@ -131,7 +155,12 @@ android {
         }
     }
 
+    // HTP skels must be stored uncompressed: NeuronCore compares the asset's
+    // openFd() length with the staged copy, and openFd() fails on compressed assets.
+    androidResources { noCompress += "so" }
+
     sourceSets["main"].jniLibs.srcDir(rustJniLibs)
+    sourceSets["main"].assets.srcDir(rustAssets)
     sourceSets["main"].kotlin.srcDir(uniffiKotlinOut)
 
     compileOptions {
@@ -148,7 +177,7 @@ android {
     }
 }
 
-tasks.named("preBuild") { dependsOn(collectRustLibs, generateUniffiBindings) }
+tasks.named("preBuild") { dependsOn(collectRustLibs, collectHtpSkels, generateUniffiBindings) }
 
 composeCompiler {
     stabilityConfigurationFile = rootProject.layout.projectDirectory.file("compose_stability.conf")

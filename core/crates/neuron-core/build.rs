@@ -24,12 +24,24 @@ fn main() {
         .expect("OUT_DIR has the standard cargo layout")
         .to_path_buf();
     let dest = profile_dir.join("neuron-libs");
+    // Start clean: a stale library from an earlier configuration (a backend
+    // that is now off, a skel from a failed run) must never reach the APK.
+    let _ = fs::remove_dir_all(&dest);
     fs::create_dir_all(&dest).expect("create neuron-libs");
 
     // llama-cpp-sys-2 installs libllama/libggml* next to the backends folder.
-    let lib_dir = backends.parent().map(|p| p.join("lib"));
-    for dir in [Some(backends.clone()), lib_dir].into_iter().flatten() {
-        copy_shared_libs(&dir, &dest);
+    let out = backends.parent().map(Path::to_path_buf);
+    for dir in [Some(backends.clone()), out.as_ref().map(|o| o.join("lib"))]
+        .into_iter()
+        .flatten()
+    {
+        copy_shared_libs(&dir, &dest, |name| !name.starts_with("libggml-htp-"));
+    }
+    // Hexagon DSP skels (see cmake/snapdragon.cmake): shipped as app assets.
+    if let Some(htp) = out.as_ref().map(|o| o.join("htp")).filter(|p| p.is_dir()) {
+        let htp_dest = dest.join("htp");
+        fs::create_dir_all(&htp_dest).expect("create neuron-libs/htp");
+        copy_shared_libs(&htp, &htp_dest, |name| name.starts_with("libggml-htp-"));
     }
     println!("cargo:neuron_libs_dir={}", dest.display());
     println!(
@@ -38,7 +50,7 @@ fn main() {
     );
 }
 
-fn copy_shared_libs(from: &Path, to: &Path) {
+fn copy_shared_libs(from: &Path, to: &Path, keep: impl Fn(&str) -> bool) {
     let Ok(entries) = fs::read_dir(from) else {
         return;
     };
@@ -48,7 +60,7 @@ fn copy_shared_libs(from: &Path, to: &Path) {
         let name = name.to_string_lossy();
         let is_shared = name.ends_with(".so") || name.contains(".so.") || name.ends_with(".dylib");
         // `common` is llama.cpp's CLI helper library; nothing in libneuron links it.
-        let is_wanted = is_shared && !name.contains("llama-common");
+        let is_wanted = is_shared && !name.contains("llama-common") && keep(&name);
         if path.is_file() && is_wanted {
             let target = to.join(&*name);
             if let Err(e) = fs::copy(&path, &target) {
