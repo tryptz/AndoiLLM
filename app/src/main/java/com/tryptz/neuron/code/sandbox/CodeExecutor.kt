@@ -1,30 +1,14 @@
 package com.tryptz.neuron.code.sandbox
 
-import com.tryptz.neuron.code.engine.QuickJSBridge
+import com.tryptz.neuron.code.shell.ShellRuntime
+import com.tryptz.neuron.core.JsErrorKind
+import com.tryptz.neuron.core.JsLimits
+import com.tryptz.neuron.core.runJavascript
 import com.tryptz.neuron.domain.model.*
 import kotlinx.coroutines.*
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
 import timber.log.Timber
 import javax.inject.Inject
 import javax.inject.Singleton
-
-@Serializable
-private data class JsResult(
-    val stdout: String = "",
-    val stderr: String = "",
-    val returnValue: String? = null,
-    val executionTimeMs: Long = 0,
-    val memoryUsedBytes: Long = 0,
-    val error: JsError? = null
-)
-
-@Serializable
-private data class JsError(
-    val type: String = "RUNTIME",
-    val message: String = "",
-    val line: Int? = null
-)
 
 /**
  * Public contract for the sandboxed code-execution engine.
@@ -55,9 +39,10 @@ interface CodeExecutor {
 }
 
 @Singleton
-class CodeExecutorImpl @Inject constructor() : CodeExecutor {
+class CodeExecutorImpl @Inject constructor(
+    private val shell: ShellRuntime
+) : CodeExecutor {
 
-    private val json = Json { ignoreUnknownKeys = true }
 
     override suspend fun execute(
         code: String,
@@ -87,80 +72,50 @@ class CodeExecutorImpl @Inject constructor() : CodeExecutor {
         }
     }
 
-    private suspend fun executeJavaScript(code: String, settings: InferenceSettings): CodeOutput {
-        QuickJSBridge.ensureLoaded()
-
-        val memLimit = settings.codeMemoryMb.toLong() * 1024 * 1024
-        val timeoutMs = settings.codeTimeoutSec.toLong() * 1000
-        var runtimeHandle = 0L
-
+    /**
+     * JavaScript runs in the Rust-side QuickJS sandbox (`neuron-sandbox`): a
+     * fresh runtime per call with a hard memory ceiling, a wall-clock deadline
+     * enforced through the interpreter's interrupt hook, no `std`/`os` modules
+     * linked in, and `console.*` captured into stdout/stderr.
+     */
+    private fun executeJavaScript(code: String, settings: InferenceSettings): CodeOutput {
+        val limits = JsLimits(
+            memoryLimitBytes = settings.codeMemoryMb.toULong() * 1024uL * 1024uL,
+            timeoutMs = settings.codeTimeoutSec.toULong() * 1000uL
+        )
         return try {
-            runtimeHandle = QuickJSBridge.createRuntime(memLimit, 1024 * 1024) // 1MB stack
-            if (runtimeHandle == 0L) {
-                return CodeOutput(
-                    error = CodeError(ErrorType.RUNTIME, "Failed to create JS runtime")
-                )
-            }
-
-            // Wrap code with console capture
-            val wrappedCode = buildString {
-                appendLine("var __stdout = [];")
-                appendLine("var __stderr = [];")
-                appendLine("var console = {")
-                appendLine("  log: function() { __stdout.push(Array.from(arguments).join(' ')); },")
-                appendLine("  error: function() { __stderr.push(Array.from(arguments).join(' ')); },")
-                appendLine("  warn: function() { __stderr.push('WARN: ' + Array.from(arguments).join(' ')); },")
-                appendLine("  info: function() { __stdout.push(Array.from(arguments).join(' ')); }")
-                appendLine("};")
-                appendLine("var __result;")
-                appendLine("try {")
-                appendLine("  __result = (function() {")
-                appendLine("    $code")
-                appendLine("  })();")
-                appendLine("} catch(e) {")
-                appendLine("  __stderr.push(e.toString());")
-                appendLine("}")
-                appendLine("JSON.stringify({")
-                appendLine("  stdout: __stdout.join('\\n'),")
-                appendLine("  stderr: __stderr.join('\\n'),")
-                appendLine("  returnValue: __result !== undefined ? String(__result) : null")
-                appendLine("});")
-            }
-
-            val resultJson = QuickJSBridge.evaluate(runtimeHandle, wrappedCode, timeoutMs)
-            val result = json.decodeFromString<JsResult>(resultJson)
-
+            val r = runJavascript(code, limits)
             CodeOutput(
-                stdout = result.stdout,
-                stderr = result.stderr,
-                returnValue = result.returnValue,
-                executionTimeMs = result.executionTimeMs,
-                memoryUsedBytes = result.memoryUsedBytes,
-                error = result.error?.let {
-                    CodeError(
-                        type = runCatching { ErrorType.valueOf(it.type) }.getOrDefault(ErrorType.RUNTIME),
-                        message = it.message,
-                        line = it.line
-                    )
+                stdout = r.stdout,
+                stderr = r.stderr,
+                returnValue = r.returnValue,
+                executionTimeMs = r.executionTimeMs.toLong(),
+                memoryUsedBytes = r.memoryUsedBytes.toLong(),
+                error = r.error?.let { e ->
+                    CodeError(type = e.kind.toDomain(), message = e.message, line = e.line?.toInt())
                 }
             )
         } catch (e: Exception) {
             Timber.e(e, "JS execution failed")
             CodeOutput(error = CodeError(ErrorType.RUNTIME, e.message ?: "Unknown error"))
-        } finally {
-            if (runtimeHandle != 0L) {
-                QuickJSBridge.destroyRuntime(runtimeHandle)
-            }
         }
+    }
+
+    private fun JsErrorKind.toDomain(): ErrorType = when (this) {
+        JsErrorKind.SYNTAX -> ErrorType.SYNTAX
+        JsErrorKind.RUNTIME -> ErrorType.RUNTIME
+        JsErrorKind.TIMEOUT -> ErrorType.TIMEOUT
+        JsErrorKind.MEMORY -> ErrorType.MEMORY
+        JsErrorKind.SECURITY -> ErrorType.SECURITY
     }
 
     private fun executePython(code: String, settings: InferenceSettings): CodeOutput {
         // Chaquopy integration — requires Chaquopy Gradle plugin.
         // For now, return a placeholder that explains the setup needed.
         return CodeOutput(
-            stderr = "Python execution requires Chaquopy SDK integration. " +
-                     "Add the Chaquopy Gradle plugin and configure the Python distribution.",
-            error = CodeError(ErrorType.RUNTIME, "Python backend not yet configured")
+            stderr = "Python runs in the terminal: open the code block in the terminal, " +
+                "after `pkg install python` once.",
+            error = CodeError(ErrorType.RUNTIME, "Use \"Open in terminal\" for Python")
         )
     }
 
@@ -170,9 +125,11 @@ class CodeExecutorImpl @Inject constructor() : CodeExecutor {
      */
     private fun executeBash(code: String, settings: InferenceSettings): CodeOutput {
         return try {
-            val process = ProcessBuilder("/system/bin/sh", "-c", code)
-                .redirectErrorStream(false)
-                .start()
+            // Termux bash + environment once the userland is installed, else /system/bin/sh.
+            val builder = ProcessBuilder(shell.command(code)).redirectErrorStream(false)
+            shell.environment()?.let { env -> builder.environment().apply { clear(); putAll(env) } }
+            shell.workingDirectory()?.let { builder.directory(it) }
+            val process = builder.start()
 
             // Drain stdout/stderr WHILE waiting: a child that writes more than
             // the ~64KB pipe buffer blocks forever if we only read after

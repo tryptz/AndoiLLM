@@ -23,6 +23,7 @@ fun ChatScreen(
     viewModel: ChatViewModel = hiltViewModel(),
     onNavigateToModelManager: () -> Unit = {},
     onNavigateToEditor: (String, String) -> Unit = { _, _ -> },
+    onNavigateToTerminal: (com.tryptz.neuron.terminal.TerminalInput?) -> Unit = {},
     pendingEditorCode: String? = null,
     onPendingEditorCodeConsumed: () -> Unit = {}
 ) {
@@ -61,7 +62,8 @@ fun ChatScreen(
                 tokSec = state.tokSec,
                 onNewChat = viewModel::newConversation,
                 onToggleModelSelector = viewModel::toggleModelSelector,
-                onToggleSettings = viewModel::toggleSettings
+                onToggleSettings = viewModel::toggleSettings,
+                onOpenTerminal = { onNavigateToTerminal(null) }
             )
         },
         bottomBar = {
@@ -97,6 +99,7 @@ fun ChatScreen(
                             message = message,
                             onRunCode = { viewModel.executeCode(it) },
                             onEditCode = { block -> onNavigateToEditor(block.code, block.language.extension) },
+                            onOpenInTerminal = { block -> onNavigateToTerminal(terminalInputFor(block)) },
                             modifier = Modifier.animateItem(
                                 fadeInSpec = tween(300), fadeOutSpec = tween(200),
                                 placementSpec = spring(stiffness = 200f, dampingRatio = 0.7f)
@@ -187,3 +190,10 @@ fun ChatScreen(
         )
     }
 }
+
+/** What "Open in terminal" hands over; the terminal decides how to type it safely. */
+internal fun terminalInputFor(block: com.tryptz.neuron.domain.model.CodeBlock) =
+    com.tryptz.neuron.terminal.TerminalInput(
+        code = block.code,
+        python = block.language == com.tryptz.neuron.domain.model.CodeLanguage.PYTHON
+    )

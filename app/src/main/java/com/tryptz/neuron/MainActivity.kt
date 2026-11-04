@@ -24,12 +24,16 @@ class MainActivity : ComponentActivity() {
     /** Hilt-bound singleton ([CodeExecutorImpl]); passed down to the editor screen. */
     @Inject lateinit var codeExecutor: CodeExecutor
 
+    /** Set when the terminal notification (or a re-launch carrying the extra) opens the app. */
+    private val openTerminal = androidx.compose.runtime.mutableStateOf(false)
+
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { /* optional */ }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+        openTerminal.value = intent?.getBooleanExtra(EXTRA_OPEN_TERMINAL, false) == true
 
         // Android 13+ requires runtime consent for POST_NOTIFICATIONS — without
         // it every download-progress notification is silently suppressed.
@@ -42,9 +46,22 @@ class MainActivity : ComponentActivity() {
         setContent {
             NeuronTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
-                    NeuronNavHost(codeExecutor = codeExecutor)
+                    NeuronNavHost(
+                        codeExecutor = codeExecutor,
+                        openTerminal = openTerminal.value,
+                        onTerminalOpened = { openTerminal.value = false }
+                    )
                 }
             }
         }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_OPEN_TERMINAL, false)) openTerminal.value = true
+    }
+
+    companion object {
+        const val EXTRA_OPEN_TERMINAL = "com.tryptz.neuron.OPEN_TERMINAL"
     }
 }

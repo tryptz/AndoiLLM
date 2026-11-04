@@ -1,16 +1,13 @@
 package com.tryptz.neuron.inference.backend
 
-import com.tryptz.neuron.domain.model.ThermalPolicy
 import com.tryptz.neuron.domain.model.ThermalState
-import kotlinx.coroutines.delay
 
 /**
- * Manages thermal throttling policy during inference.
- * Reads CPU temperature and applies configured delays to prevent
- * sustained overheating on the Snapdragon 8 Elite Gen 5.
+ * Thermal-state classification for the UI (indicator colour, telemetry merge).
  *
- * [classify] is the single source of truth for thermal-state thresholds —
- * DeviceMonitor delegates here rather than duplicating the cutoffs.
+ * Per-token throttling (pause / slow-down / tok/s cap) runs inside the Rust
+ * core's decode loop (`neuron-core::thermal`), which uses these same
+ * thresholds. Keep the two in sync; both sides have boundary tests.
  */
 object ThermalManager {
 
@@ -25,26 +22,5 @@ object ThermalManager {
         tempCelsius > HOT_THRESHOLD_C -> ThermalState.HOT
         tempCelsius > WARM_THRESHOLD_C -> ThermalState.WARM
         else -> ThermalState.NOMINAL
-    }
-
-    suspend fun applyThrottling(
-        policy: ThermalPolicy,
-        cpuTempCelsius: Float?
-    ) {
-        val temp = cpuTempCelsius ?: return
-        when (policy) {
-            ThermalPolicy.PAUSE -> if (temp > CRITICAL_THRESHOLD_C) delay(1000)
-            ThermalPolicy.SLOW_DOWN -> if (temp > HOT_THRESHOLD_C) delay(50)
-            ThermalPolicy.IGNORE -> { /* no-op */ }
-        }
-    }
-
-    suspend fun applyTokSecCap(
-        currentTokSec: Float,
-        maxTokSecCap: Int
-    ) {
-        if (maxTokSecCap > 0 && currentTokSec > maxTokSecCap) {
-            delay((1000f / maxTokSecCap).toLong())
-        }
     }
 }

@@ -73,7 +73,7 @@ class ConversationRepositoryTest {
     private fun newRepo(): Triple<ConversationRepositoryImpl, FakeConversationDao, FakeMessageDao> {
         val convDao = FakeConversationDao()
         val msgDao = FakeMessageDao()
-        return Triple(ConversationRepositoryImpl(convDao, msgDao, CodeExecutorImpl()), convDao, msgDao)
+        return Triple(ConversationRepositoryImpl(convDao, msgDao, CodeExecutorImpl(com.tryptz.neuron.code.shell.SystemShellRuntime)), convDao, msgDao)
     }
 
     private fun userMsg(convId: String, content: String, ts: Long) = ChatMessage(

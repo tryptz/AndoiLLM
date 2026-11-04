@@ -1,9 +1,9 @@
 package com.tryptz.neuron.domain.model
 
 enum class InferenceBackend(val label: String, val desc: String) {
-    NPU("Fast", "Hexagon NPU — fastest, best battery"),
-    GPU("Quality", "Adreno GPU via Vulkan — larger models"),
-    CPU("Compatible", "CPU NEON SIMD — any GGUF"),
+    NPU("Fast", "Hexagon NPU (HTP) — fastest, best battery"),
+    GPU("Quality", "Adreno GPU via OpenCL — larger models"),
+    CPU("Compatible", "Oryon CPU, NEON/i8mm — any GGUF"),
     AUTO("Auto", "Best backend for this model")
 }
 

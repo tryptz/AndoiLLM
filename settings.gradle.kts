@@ -6,7 +6,12 @@ pluginManagement {
     }
 }
 dependencyResolutionManagement {
-    repositories { google(); mavenCentral() }
+    repositories {
+        google()
+        mavenCentral()
+        // Termux's terminal-emulator / terminal-view libraries are published only on JitPack.
+        maven("https://jitpack.io") { content { includeGroup("com.github.termux.termux-app") } }
+    }
 }
 rootProject.name = "Neuron"
 include(":app")

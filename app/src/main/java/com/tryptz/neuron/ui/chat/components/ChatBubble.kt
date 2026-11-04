@@ -27,6 +27,7 @@ fun ChatBubble(
     message: ChatMessage,
     onRunCode: (CodeBlock) -> Unit,
     onEditCode: (CodeBlock) -> Unit,
+    onOpenInTerminal: (CodeBlock) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val isUser = message.role == MessageRole.USER
@@ -81,6 +82,7 @@ fun ChatBubble(
                 codeBlock = block,
                 onRun = { onRunCode(block) },
                 onEdit = { onEditCode(block) },
+                onOpenInTerminal = { onOpenInTerminal(block) },
                 onCopy = {
                     clipboard.setText(AnnotatedString(block.code))
                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -148,12 +150,14 @@ fun CodeBlockCard(
     codeBlock: CodeBlock,
     onRun: () -> Unit,
     onEdit: () -> Unit,
-    onCopy: () -> Unit
+    onCopy: () -> Unit,
+    onOpenInTerminal: () -> Unit = {}
 ) {
     val haptic = LocalHapticFeedback.current
-    val isRunnable = codeBlock.language in listOf(
-        CodeLanguage.JAVASCRIPT, CodeLanguage.PYTHON, CodeLanguage.BASH, CodeLanguage.HTML
-    )
+    val isRunnable = codeBlock.language in listOf(CodeLanguage.JAVASCRIPT, CodeLanguage.HTML)
+    // Shell and Python never run from chat: they are typed into the terminal
+    // (Termux userland) for the user to read and press Enter.
+    val isShell = codeBlock.language == CodeLanguage.BASH || codeBlock.language == CodeLanguage.PYTHON
 
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -179,6 +183,19 @@ fun CodeBlockCard(
                 )
 
                 Row {
+                    if (isShell) {
+                        IconButton(
+                            onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onOpenInTerminal() },
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                Icons.Default.Terminal,
+                                contentDescription = "Open in terminal",
+                                tint = Color(0xFF3FB950),
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                    }
                     if (isRunnable) {
                         IconButton(
                             onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); onRun() },

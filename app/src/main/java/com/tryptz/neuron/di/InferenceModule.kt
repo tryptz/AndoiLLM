@@ -1,5 +1,7 @@
 package com.tryptz.neuron.di
 
+import com.tryptz.neuron.code.shell.ShellRuntime
+import com.tryptz.neuron.code.shell.TermuxShellRuntime
 import com.tryptz.neuron.code.sandbox.CodeExecutor
 import com.tryptz.neuron.code.sandbox.CodeExecutorImpl
 import com.tryptz.neuron.data.repository.ModelRepository
@@ -32,4 +34,8 @@ abstract class InferenceModule {
     @Binds
     @Singleton
     abstract fun bindModelRepository(impl: ModelRepositoryImpl): ModelRepository
+
+    @Binds
+    @Singleton
+    abstract fun bindShellRuntime(impl: TermuxShellRuntime): ShellRuntime
 }

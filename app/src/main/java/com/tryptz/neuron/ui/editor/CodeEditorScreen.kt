@@ -136,7 +136,7 @@ fun CodeEditorScreen(
                         onClick = {
                             if (undoStack.isNotEmpty()) {
                                 redoStack.add(code)
-                                code = undoStack.removeLast()
+                                code = undoStack.removeAt(undoStack.lastIndex)
                             }
                         },
                         enabled = undoStack.isNotEmpty()
@@ -147,7 +147,7 @@ fun CodeEditorScreen(
                         onClick = {
                             if (redoStack.isNotEmpty()) {
                                 undoStack.add(code)
-                                code = redoStack.removeLast()
+                                code = redoStack.removeAt(redoStack.lastIndex)
                             }
                         },
                         enabled = redoStack.isNotEmpty()

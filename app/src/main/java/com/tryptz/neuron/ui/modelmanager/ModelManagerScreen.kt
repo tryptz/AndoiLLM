@@ -37,7 +37,8 @@ import com.tryptz.neuron.util.formatMbAsGb
 @Composable
 fun ModelManagerScreen(
     viewModel: ModelManagerViewModel = hiltViewModel(),
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenHfBrowser: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsState()
     val haptic = LocalHapticFeedback.current
@@ -121,6 +122,9 @@ fun ModelManagerScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = onOpenHfBrowser) {
+                        Icon(Icons.Default.Public, "Browse Hugging Face")
+                    }
                     // Wi-Fi-only downloads: gates the WorkManager network
                     // constraint (UNMETERED vs CONNECTED) for multi-GB models.
                     val wifiOnly by viewModel.wifiOnly.collectAsState()
@@ -175,7 +179,8 @@ fun ModelManagerScreen(
                     onQueryChange = viewModel::setHfQuery,
                     onSortChange = viewModel::setHfSort,
                     onToggleRepo = viewModel::toggleHfRepo,
-                    onDownloadFile = viewModel::downloadHfFile
+                    onDownloadFile = viewModel::downloadHfFile,
+                    onOpenBrowser = onOpenHfBrowser
                 )
             }
 
@@ -691,7 +696,8 @@ private fun DiscoverSection(
     onQueryChange: (String) -> Unit,
     onSortChange: (HfSort) -> Unit,
     onToggleRepo: (String) -> Unit,
-    onDownloadFile: (String, HfFile) -> Unit
+    onDownloadFile: (String, HfFile) -> Unit,
+    onOpenBrowser: () -> Unit = {}
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -700,7 +706,14 @@ private fun DiscoverSection(
         )
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text("Discover on Hugging Face", style = MaterialTheme.typography.titleMedium)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Discover on Hugging Face", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+                FilledTonalButton(onClick = onOpenBrowser) {
+                    Icon(Icons.Default.Public, null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Browse")
+                }
+            }
             Spacer(Modifier.height(8.dp))
 
             OutlinedTextField(
@@ -763,7 +776,8 @@ private fun HfRepoCard(
     repo: HfRepoSummary,
     state: ModelManagerUiState,
     onToggleRepo: (String) -> Unit,
-    onDownloadFile: (String, HfFile) -> Unit
+    onDownloadFile: (String, HfFile) -> Unit,
+    onOpenBrowser: () -> Unit = {}
 ) {
     val expanded = state.hfExpandedRepo == repo.id
     OutlinedCard(

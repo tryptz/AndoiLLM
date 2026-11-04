@@ -1,0 +1,30 @@
+[package]
+name = "neuron-core"
+description = "Neuron on-device inference engine: Snapdragon-aware llama.cpp orchestration in Rust"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+links = "neuron_core"
+
+[features]
+default = ["llama"]
+# Compile the llama.cpp-backed engine. Off = pure-Rust modules only (fast host tests).
+llama = ["dep:llama-cpp-2", "dep:llama-cpp-sys-2"]
+
+[dependencies]
+thiserror.workspace = true
+serde.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+libc.workspace = true
+# `dynamic-backends` builds every ggml backend (CPU variants, OpenCL, Hexagon) as
+# its own shared module that is dlopen'ed at runtime. A backend whose driver is
+# missing on the phone is skipped instead of taking the whole process down.
+llama-cpp-2 = { workspace = true, features = ["dynamic-backends", "android-shared-stdcxx"], optional = true }
+llama-cpp-sys-2 = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"
